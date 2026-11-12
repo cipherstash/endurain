@@ -14,13 +14,15 @@ Terms used here:
 | 1 | EQL | A plain `ORDER BY` on an encrypted column returns a wrong order. |
 | 2 | EQL and the SDK docs | A second install of the EQL bundle silently drops indexes. |
 | 3 | The SDK | An app cannot build a query term without credentials. |
-| 4 | Endurain | The monthly summary fails on PostgreSQL with `GroupingError`. |
+| 4 | Endurain | The monthly summary fails on PostgreSQL with `GroupingError`. Gone on this branch since step 3. |
 | 5 | Endurain | Alembic autogenerate finds differences that stock Endurain already has. |
-| 6 | The SDK | `configure_encryption` failed on a table with any unique constraint. Fixed locally, not committed. |
+| 6 | The SDK | `configure_encryption` failed on a table with any unique constraint. Fixed in `cipherstash/stack` commit `63327b0d5`. |
 | 7 | The SDK and Endurain | A 1-character match search raises an error, and a 2-character one matches only a whole word. |
 | 8 | Endurain | A search on encrypted columns loads every matching row to count and page them. |
 | 9 | The SDK | `TextSearch` adds an equality index that Endurain never uses. |
 | 10 | Endurain | `activities.timezone` stays plaintext. |
+| 11 | Endurain | The summaries and the gear totals read every activity of the period. |
+| 12 | The SDK | A `Numeric` field refuses a `float`. |
 
 ## 1. A plain ORDER BY on an encrypted column returns a wrong order
 
@@ -172,11 +174,11 @@ The test `test_sunday_start_splits_monthly_buckets_on_sunday` ran on SQLite. SQL
 
 ### Current state
 
-The test now runs on PostgreSQL. It is skipped with a "Solve later" reason.
+On this branch, the error is gone since step 3. The metrics are encrypted, so the summaries no longer use `GROUP BY` in SQL. They read one row per activity and group the rows in Python (item 11). The test runs on PostgreSQL again, without a skip, and passes.
 
-The app connects with `postgresql+psycopg`, the same driver as the test. So the monthly summary endpoint probably fails the same way. I have not called the endpoint to confirm this.
+Stock Endurain still has the bug. The app connects with `postgresql+psycopg`, the same driver as the test. So the stock monthly summary endpoint probably fails the same way. I have not called the endpoint to confirm this.
 
-### Possible fixes
+### Possible fixes for stock Endurain
 
 Group and sort by the label, `GROUP BY week_number`, instead of by the expression. Or write the constants inline with `literal()` or `literal_column()`. Neither fix has been tested.
 
@@ -231,7 +233,7 @@ The SDK's test put `unique=True` on the encrypted column itself. Then `column.un
 
 ### Current state
 
-Fixed in the `cipherstash/stack` working tree, not committed. `stackencrypt/sqlalchemy.py` now uses `constraint.columns.contains_column(column)`. Two new tests in `tests/test_sqlalchemy.py` cover a plaintext unique column, and an encrypted column inside a two-column unique constraint. Endurain's `.venv` has the fixed SDK. Endurain cannot start without the fix.
+Fixed in `cipherstash/stack` commit `63327b0d5`. `stackencrypt/sqlalchemy.py` now uses `constraint.columns.contains_column(column)`. Two new tests in `tests/test_sqlalchemy.py` cover a plaintext unique column, and an encrypted column inside a two-column unique constraint. Endurain cannot start without the fix.
 
 ## 7. Short match search terms
 
@@ -286,4 +288,41 @@ Add a marker, or a marker option, for match and order without equality.
 The summaries pass `timezone` to PostgreSQL's `timezone()` function (`backend/app/modules/activities/activity/query.py`). The database cannot do that with an encrypted value. So the column stays plaintext.
 
 A time zone shows roughly where a person lives. The city, town, and country are encrypted, but the time zone is not.
+
+## 11. The summaries and the gear totals read every activity of the period
+
+### What happens
+
+The 19 metric columns are encrypted since step 3, and SQL cannot add encrypted values. So these functions read one row per activity, decrypt the metrics, and add them up in Python:
+
+- the weekly, monthly, yearly, and lifetime summaries, in `summary_crud.py`;
+- the gear totals, `sum_gear_usage` and `sum_gear_usage_by_window`, in `activity/crud.py`.
+
+Each summary reads its rows once, and builds the period breakdown, the type breakdown, and the totals from them. Before, each summary ran 2 or 3 aggregate queries.
+
+### Effect on Endurain
+
+The results are the same. Tests check the totals, a `NULL` value, the type order, and a gear window across a time zone boundary.
+
+A summary now decrypts 4 values for each activity in the period. The lifetime summary decrypts every activity of the user, on each request. This has not been measured.
+
+### Proposal
+
+Measure a lifetime summary for a user with several thousand activities. If it is too slow, store the totals per period, and update them when an activity changes.
+
+## 12. A Numeric field refuses a float
+
+### What happens
+
+`total_elapsed_time`, `total_timer_time`, `pace`, `average_speed`, and `max_speed` were `NUMERIC(20, 10)` columns. The API schemas and the importers give them as `float`. PostgreSQL converted the float, and rounded it to 10 decimal places.
+
+The SDK's `Numeric` and `NumericOrd` fields take only `Decimal`. A `float` raises `InvalidValueError` with `value_wrong_type`. So creating an activity through the app failed.
+
+### Current state
+
+The `Activity` model converts these 5 fields with a SQLAlchemy `@validates` method. It turns a `float` into a `Decimal`, rounded to 10 places, as the column did. A test checks this.
+
+### Proposal
+
+Decide whether the SDK should accept a `float` for a `Numeric` field. A float cannot hold most decimal values exactly, so refusing it is a defensible choice. If the SDK keeps refusing it, the README should say so, with the conversion an app needs.
 

@@ -1547,33 +1547,12 @@ class TestSumGearUsageByWindow:
         assert "activities.start_time >=" not in sql
         assert "activities.start_time <=" not in sql
 
-    def test_open_ended_window_has_no_upper_bound(self):
-        """A component still in use is bounded below only."""
-        sql = self._emitted_sql([self._window(end_date=None)]).replace("\n", " ")
-
-        assert ">= '2024-05-01'" in sql
-        assert "<=" not in sql
-
     def test_no_windows_short_circuits(self):
         import modules.activities.activity.crud as crud
 
         db = MagicMock()
         assert crud.sum_gear_usage_by_window(1, 1, [], db) == {}
         db.execute.assert_not_called()
-
-    def test_every_requested_key_is_returned(self):
-        import modules.activities.activity.crud as crud
-
-        db = MagicMock()
-        db.get_bind.return_value.dialect.name = "sqlite"
-        db.execute.return_value.one.return_value = [10.0, 60.0, 0, 0]
-
-        result = crud.sum_gear_usage_by_window(1, 1, [self._window(key=1), self._window(key=2)], db)
-
-        assert result[1].distance == 10.0
-        assert result[1].time == 60.0
-        # A window that matched nothing still reports zeroes rather than going missing.
-        assert result[2].distance == 0.0
 
 
 class TestEncryptedTextColumns:
@@ -1727,3 +1706,123 @@ class TestEncryptedTextColumns:
         assert (activity.city, activity.town, activity.country) == ("Lisbon", None, "Portugal")
         missing = crud.get_activities_missing_location(pg_session, due_at=datetime(2030, 1, 1, tzinfo=UTC))
         assert missing == []
+
+
+class TestEncryptedMetrics:
+    """The activity metrics are CipherStash-encrypted.
+
+    These run on PostgreSQL with EQL v4 and CipherStash credentials. The sorts
+    use the order terms, and the gear totals add the decrypted values in Python.
+    """
+
+    @staticmethod
+    def _add(pg_session, rows):
+        for index, fields in enumerate(rows, start=1):
+            minute = datetime(2024, 1, 1, 0, index, tzinfo=UTC)
+            defaults = {"id": index, "name": f"Activity {index}", "start_time": minute, "created_at": minute}
+            pg_session.add(_public_activity(**{**defaults, **fields}))
+        pg_session.commit()
+
+    @staticmethod
+    def _sorted_ids(pg_session, sort_by, order):
+        import modules.activities.activity.crud as crud
+
+        found = crud.get_user_activities_with_pagination(
+            user_id=1, db=pg_session, sort_by=sort_by, sort_order=order, user_is_owner=True
+        )
+        return [activity.id for activity in found]
+
+    def test_the_stored_distance_is_not_plaintext(self, pg_session):
+        from sqlalchemy import text
+
+        self._add(pg_session, [{"distance": 42195}])
+
+        stored = pg_session.execute(text("SELECT distance::jsonb::text FROM activities")).scalar_one()
+        assert "42195" not in stored
+
+    def test_the_distance_sort_follows_the_plaintext(self, pg_session):
+        self._add(pg_session, [{"distance": 5000}, {"distance": 42195}, {"distance": 10000}])
+
+        assert self._sorted_ids(pg_session, "distance", "asc") == [1, 3, 2]
+        assert self._sorted_ids(pg_session, "distance", "desc") == [2, 3, 1]
+
+    def test_no_calorie_count_sorts_last_in_both_directions(self, pg_session):
+        self._add(pg_session, [{"calories": 300}, {"calories": None}, {"calories": 100}])
+
+        assert self._sorted_ids(pg_session, "calories", "asc") == [3, 1, 2]
+        assert self._sorted_ids(pg_session, "calories", "desc") == [1, 3, 2]
+
+    def test_the_duration_sort_compares_decimals_of_different_scales(self, pg_session):
+        self._add(
+            pg_session,
+            [
+                {"total_timer_time": Decimal("3600")},
+                {"total_timer_time": Decimal("3599.5")},
+                {"total_timer_time": Decimal("3600.0000000001")},
+                {"total_timer_time": Decimal("10")},
+            ],
+        )
+
+        assert self._sorted_ids(pg_session, "duration", "asc") == [4, 2, 1, 3]
+
+    def test_a_float_is_stored_as_a_decimal_rounded_to_10_places(self, pg_session):
+        import modules.activities.activity.models as am
+
+        self._add(pg_session, [{"total_elapsed_time": 3600.123456789012, "pace": 0.3}])
+
+        pg_session.expire_all()
+        activity = pg_session.get(am.Activity, 1)
+        assert activity.total_elapsed_time == Decimal("3600.1234567890")
+        assert activity.pace == Decimal("0.3000000000")
+
+    def test_the_gear_totals_add_up_the_owners_activities(self, pg_session):
+        from sqlalchemy import text
+
+        import modules.activities.activity.contracts as contracts
+        import modules.activities.activity.crud as crud
+
+        pg_session.execute(
+            text(
+                "INSERT INTO gear (id, nickname, gear_type, user_id, created_at, active, initial_kms)"
+                " VALUES (1, 'bike', 1, 1, now(), true, 0)"
+            )
+        )
+        pg_session.commit()
+        # The second ride starts at 22:00 UTC on 30 April, which is 1 May in
+        # Tokyo. So it belongs to a window that starts on 1 May.
+        self._add(
+            pg_session,
+            [
+                {
+                    "gear_id": 1,
+                    "distance": 1000,
+                    "total_timer_time": Decimal("100"),
+                    "start_time": datetime(2024, 4, 20, tzinfo=UTC),
+                },
+                {
+                    "gear_id": 1,
+                    "distance": 2000,
+                    "total_timer_time": Decimal("200.5"),
+                    "start_time": datetime(2024, 4, 30, 22, tzinfo=UTC),
+                    "timezone": "Asia/Tokyo",
+                },
+                {"gear_id": None, "distance": 9999},
+            ],
+        )
+
+        totals = crud.sum_gear_usage(1, 1, pg_session)
+        windows = crud.sum_gear_usage_by_window(
+            1,
+            1,
+            [
+                contracts.GearUsageWindow(key=1, start_date=date(2024, 5, 1)),
+                contracts.GearUsageWindow(key=2, start_date=date(2024, 4, 1), end_date=date(2024, 4, 30)),
+                contracts.GearUsageWindow(key=3, start_date=date(2025, 1, 1)),
+            ],
+            pg_session,
+        )
+
+        assert (totals.distance, totals.time) == (3000.0, 300.5)
+        assert (windows[1].distance, windows[1].time) == (2000.0, 200.5)
+        assert (windows[2].distance, windows[2].time) == (1000.0, 100.0)
+        assert (windows[3].distance, windows[3].time) == (0.0, 0.0)

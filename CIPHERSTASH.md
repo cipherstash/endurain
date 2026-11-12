@@ -3,7 +3,8 @@
 Endurain encrypts these columns:
 
 - `users`: `name`, `username`, `email`, and `city`;
-- `activities`: `name`, `description`, `private_notes`, `city`, `town`, and `country`.
+- `activities`: `name`, `description`, `private_notes`, `city`, `town`, and `country`;
+- `activities`: the 19 metric columns, such as `distance`, `total_timer_time`, `calories`, and `average_hr`.
 
 The encryption uses the CipherStash Python SDK, `stackencrypt`.
 
@@ -67,7 +68,8 @@ Set `TEST_EQL_BUNDLE` to the path of the bundle from step 1.
 ## 4. Start Endurain
 
 Start Endurain as usual. Migration 29 encrypts the existing users rows.
-Migration 30 encrypts the existing activities rows.
+Migration 30 encrypts the existing activities text columns.
+Migration 31 encrypts the existing activities metric columns.
 
 ## Upgrade EQL
 
@@ -75,7 +77,7 @@ Do not just run step 2 again on a database that Endurain already uses.
 
 The bundle starts with `DROP SCHEMA eql_v4 CASCADE`.
 That drop also removes every index that uses an `eql_v4` function.
-In Endurain, these are 16 indexes:
+In Endurain, these are 22 indexes:
 
 - on `users`, the four indexes that migration 29 creates:
   - `ix_users_email`, to refuse a duplicate email;
@@ -83,7 +85,8 @@ In Endurain, these are 16 indexes:
   - `ix_users_username_ope`, for sorting by username;
   - `ix_users_username_match`, for username search;
 - on `activities`, the 12 indexes that migration 30 creates.
-  `name`, `city`, `town`, and `country` each have an `_eq`, an `_ope`, and a `_match` index.
+  `name`, `city`, `town`, and `country` each have an `_eq`, an `_ope`, and a `_match` index;
+- on `activities`, the 6 `_ope` indexes that migration 31 creates, for the metrics that the activity list sorts by.
 
 PostgreSQL gives no error. The encrypted values stay, because their column types are in `public`.
 But duplicate emails and usernames are no longer refused, and searches read every row.
@@ -99,7 +102,7 @@ psql "$DB" -At -c "SELECT pg_get_indexdef(indexrelid) || ';' FROM pg_index
   WHERE indrelid IN ('public.users'::regclass, 'public.activities'::regclass)
   AND pg_get_indexdef(indexrelid) LIKE '%eql_v4.%'" > eql-indexes.sql
 
-# 2. Check that the file has the 16 indexes.
+# 2. Check that the file has the 22 indexes.
 wc -l eql-indexes.sql
 
 # 3. Reinstall EQL and create the indexes again, in one transaction.

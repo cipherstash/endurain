@@ -8,7 +8,6 @@ from typing import Any, cast
 from sqlalchemy import (
     CursorResult,
     and_,
-    case,
     desc,
     func,
     literal,
@@ -48,11 +47,9 @@ SORT_MAP: dict[str, tuple[Any, ...]] = {
 
 _DEFAULT_SORT_COLUMNS = SORT_MAP[activity_constants.DEFAULT_ACTIVITY_SORT_FIELD]
 
-# Stands in for NULL in numeric sorts. Its sign follows the direction, so a NULL
-# sorts after every real value both ascending and descending.
-_NULL_SORT_SENTINEL = 999999
-
-# Columns that need COALESCE-with-sentinel so NULLs sort last
+# Metric columns whose NULLs sort after every value, ascending and descending.
+# They are encrypted, so NULLS LAST does this, not COALESCE with a plaintext
+# number.
 _NUMERIC_SORT_COLUMNS = {
     activity_models.Activity.distance,
     activity_models.Activity.total_timer_time,
@@ -86,14 +83,12 @@ def _sort_order_by(sort_by: str | None, sort_order: str | None) -> list[Any]:
     columns = SORT_MAP.get(sort_by or "", _DEFAULT_SORT_COLUMNS)
     clauses = []
     for column in columns:
+        ordered = column.asc() if ascending else column.desc()
         if column in _NUMERIC_SORT_COLUMNS:
-            ordered = func.coalesce(column, _NULL_SORT_SENTINEL if ascending else -_NULL_SORT_SENTINEL)
+            ordered = ordered.nulls_last()
         elif column in _TEXT_SORT_COLUMNS:
-            clauses.append(column.asc().nulls_first() if ascending else column.desc().nulls_last())
-            continue
-        else:
-            ordered = column
-        clauses.append(ordered.asc() if ascending else ordered.desc())
+            ordered = ordered.nulls_first() if ascending else ordered.nulls_last()
+        clauses.append(ordered)
     return clauses
 
 
@@ -755,12 +750,16 @@ def sum_gear_usage(gear_id: int, user_id: int, db: Session) -> activity_contract
     Returns:
         The gear's totals; zeroes when it has no activities.
     """
-    stmt = select(
-        func.coalesce(func.sum(activity_models.Activity.distance), 0),
-        func.coalesce(func.sum(activity_models.Activity.total_timer_time), 0),
-    ).where(activity_models.Activity.gear_id == gear_id, activity_models.Activity.user_id == user_id)
-    distance, moving_time = db.execute(stmt).one()
-    return activity_contracts.ActivityUsageTotals(distance=float(distance), time=float(moving_time))
+    # The metrics are encrypted, and SQL cannot add encrypted values. So each
+    # activity's values are read, decrypted, and added up here.
+    stmt = select(activity_models.Activity.distance, activity_models.Activity.total_timer_time).where(
+        activity_models.Activity.gear_id == gear_id, activity_models.Activity.user_id == user_id
+    )
+    rows = db.execute(stmt).all()
+    return activity_contracts.ActivityUsageTotals(
+        distance=float(sum(row.distance for row in rows)),
+        time=float(sum(row.total_timer_time for row in rows)),
+    )
 
 
 def sum_gear_usage_by_window(
@@ -772,10 +771,11 @@ def sum_gear_usage_by_window(
     """Total distance and moving time per date window for one gear.
 
     Answers "how far has each component of this gear been ridden?" in a single
-    pass over the gear's activities: each window contributes a pair of conditional
-    sums, so adding a component costs two more aggregate expressions rather than
-    another round trip. Windows are matched against each activity's **local** date
-    (see :class:`~modules.activities.activity.contracts.GearUsageWindow`).
+    query over the gear's activities. The metrics are encrypted, and SQL cannot
+    add encrypted values. So the query reads each activity's local date and
+    values, and the windows are summed here. Windows are matched against each
+    activity's **local** date (see
+    :class:`~modules.activities.activity.contracts.GearUsageWindow`).
 
     Only the gear owner's own activities count, as in :func:`sum_gear_usage`.
 
@@ -792,29 +792,21 @@ def sum_gear_usage_by_window(
     if not windows:
         return {}
 
-    local_date = func.date(activity_query.local_start_time_expression())
-
-    columns = []
-    for window in windows:
-        in_window = local_date >= window.start_date
-        if window.end_date is not None:
-            in_window = and_(in_window, local_date <= window.end_date)
-        columns.append(func.coalesce(func.sum(case((in_window, activity_models.Activity.distance), else_=0)), 0))
-        columns.append(
-            func.coalesce(func.sum(case((in_window, activity_models.Activity.total_timer_time), else_=0)), 0)
-        )
-
-    stmt = select(*columns).where(
+    local_date = func.date(activity_query.local_start_time_expression()).label("local_date")
+    stmt = select(local_date, activity_models.Activity.distance, activity_models.Activity.total_timer_time).where(
         activity_models.Activity.gear_id == gear_id, activity_models.Activity.user_id == user_id
     )
-    row = db.execute(stmt).one()
+    rows = db.execute(stmt).all()
+
+    def in_window(day, window) -> bool:
+        return day >= window.start_date and (window.end_date is None or day <= window.end_date)
 
     return {
         window.key: activity_contracts.ActivityUsageTotals(
-            distance=float(row[index * 2]),
-            time=float(row[index * 2 + 1]),
+            distance=float(sum(row.distance for row in rows if in_window(row.local_date, window))),
+            time=float(sum(row.total_timer_time for row in rows if in_window(row.local_date, window))),
         )
-        for index, window in enumerate(windows)
+        for window in windows
     }
 
 

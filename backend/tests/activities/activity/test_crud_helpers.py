@@ -116,9 +116,10 @@ class TestSortOrderPutsNullsLast:
             str(c.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})) for c in clauses
         )
 
-    def test_descending_uses_a_negative_sentinel(self):
-        assert "-999999" in self._compiled("desc")
+    # distance is encrypted, so the sort uses its order term, and NULLS LAST
+    # instead of COALESCE with a plaintext sentinel.
+    def test_descending_puts_nulls_last(self):
+        assert self._compiled("desc") == "eql_v4.ord_term(activities.distance) DESC NULLS LAST"
 
-    def test_ascending_uses_a_positive_sentinel(self):
-        sql = self._compiled("asc")
-        assert "999999" in sql and "-999999" not in sql
+    def test_ascending_puts_nulls_last(self):
+        assert self._compiled("asc") == "eql_v4.ord_term(activities.distance) ASC NULLS LAST"

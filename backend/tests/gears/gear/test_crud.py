@@ -38,16 +38,24 @@ class TestGetGearUserById:
 
 class TestGetGearActivityStats:
     def test_success(self, mock_db):
+        from decimal import Decimal
+        from types import SimpleNamespace
+
         import modules.gears.gear.crud as crud
 
-        mock_db.execute.return_value.one.return_value = (50000.0, 7200.0)
+        # One row per activity: the metrics are encrypted, so they are added
+        # up in Python.
+        mock_db.execute.return_value.all.return_value = [
+            SimpleNamespace(distance=30000, total_timer_time=Decimal("3600")),
+            SimpleNamespace(distance=20000, total_timer_time=Decimal("3600")),
+        ]
         r = crud.get_gear_activity_stats(gear_id=1, user_id=1, db=mock_db)
         assert r == {"total_distance": 50000.0, "total_time": 7200.0}
 
     def test_zero_values(self, mock_db):
         import modules.gears.gear.crud as crud
 
-        mock_db.execute.return_value.one.return_value = (0.0, 0.0)
+        mock_db.execute.return_value.all.return_value = []
         r = crud.get_gear_activity_stats(gear_id=1, user_id=1, db=mock_db)
         assert r == {"total_distance": 0.0, "total_time": 0.0}
 

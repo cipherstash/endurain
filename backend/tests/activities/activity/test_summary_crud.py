@@ -20,6 +20,21 @@ def pg_session(pg_factory):
         session.close()
 
 
+def _activity_row(bucket=None, *, activity_type=1, distance=10000, duration="3600", elevation=100, calories=500):
+    """One row as the summaries read it: one activity, its metrics decrypted."""
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        bucket=bucket,
+        activity_type=activity_type,
+        distance=distance,
+        total_timer_time=Decimal(duration),
+        elevation_gain=elevation,
+        calories=calories,
+    )
+
+
 class TestGetWeeklySummary:
     def test_success(self, mock_db):
         from datetime import datetime
@@ -125,17 +140,7 @@ class TestGetMonthlySummary:
 
         import modules.activities.activity.summary_crud as crud
 
-        row = MagicMock()
-        row.week_number = 3
-        row.total_distance = 20000
-        row.total_duration = 7200.0
-        row.total_elevation_gain = 200
-        row.total_calories = 1000
-        row.activity_count = 2
-        mock_db.execute.return_value.all.side_effect = [
-            [row],
-            [],
-        ]
+        mock_db.execute.return_value.all.return_value = [_activity_row(3), _activity_row(3)]
         r = crud.get_monthly_summary(
             user_id=1,
             target_date=datetime(2024, 1, 15),
@@ -143,6 +148,8 @@ class TestGetMonthlySummary:
             db=mock_db,
         )
         assert r.activity_count == 2
+        assert r.total_distance == 20000.0
+        assert [(week.week_number, week.activity_count) for week in r.breakdown] == [(3, 2)]
 
     def test_empty(self, mock_db):
         from datetime import datetime
@@ -161,13 +168,6 @@ class TestGetMonthlySummary:
         )
         assert r.activity_count == 0
 
-    @pytest.mark.skip(
-        reason=(
-            "Solve later: on PostgreSQL, get_monthly_summary raises GroupingError. "
-            "SELECT and GROUP BY each bind their own copies of week_expr's constants, "
-            "so PostgreSQL cannot match the two expressions."
-        )
-    )
     def test_sunday_start_splits_monthly_buckets_on_sunday(self, pg_session):
         """Test monthly week buckets roll over on the configured day."""
         import modules.activities.activity.models as activity_models
@@ -227,20 +227,12 @@ class TestGetYearlySummary:
     def test_success(self, mock_db):
         import modules.activities.activity.summary_crud as crud
 
-        row = MagicMock()
-        row.month_number = 6
-        row.total_distance = 50000
-        row.total_duration = 18000.0
-        row.total_elevation_gain = 500
-        row.total_calories = 2500
-        row.activity_count = 5
-        mock_db.execute.return_value.all.side_effect = [
-            [row],
-            [],
-        ]
+        mock_db.execute.return_value.all.return_value = [_activity_row(6) for _ in range(5)]
         r = crud.get_yearly_summary(user_id=1, year=2024, db=mock_db)
         assert r.activity_count == 5
+        assert r.total_duration == 18000.0
         assert len(r.breakdown) == 12
+        assert r.breakdown[5].activity_count == 5
 
     def test_empty(self, mock_db):
         import modules.activities.activity.summary_crud as crud
@@ -255,17 +247,7 @@ class TestGetYearlySummary:
     def test_with_type_filter(self, mock_db):
         import modules.activities.activity.summary_crud as crud
 
-        row = MagicMock()
-        row.month_number = 1
-        row.total_distance = 10000
-        row.total_duration = 3600.0
-        row.total_elevation_gain = 100
-        row.total_calories = 500
-        row.activity_count = 1
-        mock_db.execute.return_value.all.side_effect = [
-            [row],
-            [],
-        ]
+        mock_db.execute.return_value.all.return_value = [_activity_row(1)]
         r = crud.get_yearly_summary(user_id=1, year=2024, activity_type="cycling", db=mock_db)
         assert r.activity_count == 1
 
@@ -274,62 +256,28 @@ class TestGetLifetimeSummary:
     def test_success(self, mock_db):
         import modules.activities.activity.summary_crud as crud
 
-        totals_row = MagicMock()
-        totals_row.total_distance = 100000.0
-        totals_row.total_duration = 36000.0
-        totals_row.total_elevation_gain = 1000.0
-        totals_row.total_calories = 5000.0
-        totals_row.activity_count = 10
-
-        yearly_row = MagicMock()
-        yearly_row.year_number = 2024
-        yearly_row.total_distance = 50000.0
-        yearly_row.total_duration = 18000.0
-        yearly_row.total_elevation_gain = 500.0
-        yearly_row.total_calories = 2500.0
-        yearly_row.activity_count = 5
-
-        mock_db.execute.return_value.one_or_none.return_value = totals_row
-        mock_db.execute.return_value.all.side_effect = [
-            [yearly_row],
-            [],
-        ]
+        rows = [_activity_row(2024) for _ in range(5)] + [_activity_row(2023, calories=None) for _ in range(5)]
+        mock_db.execute.return_value.all.return_value = rows
         r = crud.get_lifetime_summary(user_id=1, db=mock_db)
         assert r.activity_count == 10
-        assert len(r.breakdown) == 1
+        # A NULL calorie count adds nothing, as SQL SUM skips NULL.
+        assert r.total_calories == 2500.0
+        assert [year.year_number for year in r.breakdown] == [2024, 2023]
 
     def test_no_totals(self, mock_db):
         import modules.activities.activity.summary_crud as crud
 
-        mock_db.execute.return_value.one_or_none.return_value = None
+        mock_db.execute.return_value.all.return_value = []
         r = crud.get_lifetime_summary(user_id=1, db=mock_db)
         assert r.activity_count == 0
         assert r.total_distance == 0.0
         assert r.breakdown == []
+        assert r.type_breakdown == []
 
     def test_with_type_filter(self, mock_db):
         import modules.activities.activity.summary_crud as crud
 
-        totals_row = MagicMock()
-        totals_row.total_distance = 50000.0
-        totals_row.total_duration = 18000.0
-        totals_row.total_elevation_gain = 500.0
-        totals_row.total_calories = 2500.0
-        totals_row.activity_count = 5
-
-        yearly_row = MagicMock()
-        yearly_row.year_number = 2024
-        yearly_row.total_distance = 50000.0
-        yearly_row.total_duration = 18000.0
-        yearly_row.total_elevation_gain = 500.0
-        yearly_row.total_calories = 2500.0
-        yearly_row.activity_count = 5
-
-        mock_db.execute.return_value.one_or_none.return_value = totals_row
-        mock_db.execute.return_value.all.side_effect = [
-            [yearly_row],
-            [],
-        ]
+        mock_db.execute.return_value.all.return_value = [_activity_row(2024) for _ in range(5)]
         r = crud.get_lifetime_summary(user_id=1, activity_type="running", db=mock_db)
         assert r.activity_count == 5
 
@@ -365,49 +313,27 @@ class TestApplyActivityTypeFilter:
         stmt.where.assert_called_once()
 
 
-class TestGetTypeBreakdown:
-    def test_success(self, mock_db):
+class TestTypeBreakdown:
+    def test_success(self):
         import modules.activities.activity.summary_crud as crud
 
-        row = MagicMock()
-        row.activity_type = 1
-        row.total_distance = 10000.0
-        row.total_duration = 3600.0
-        row.total_elevation_gain = 100.0
-        row.total_calories = 500.0
-        row.activity_count = 1
-        mock_db.execute.return_value.all.return_value = [row]
-        result = crud._get_type_breakdown(1, date.min, date.max, mock_db)
+        result = crud._type_breakdown([_activity_row(activity_type=1)])
         assert len(result) == 1
         assert result[0].activity_type_id == 1
         assert result[0].total_distance == 10000.0
 
-    def test_empty(self, mock_db):
+    def test_empty(self):
         import modules.activities.activity.summary_crud as crud
 
-        mock_db.execute.return_value.all.return_value = []
-        result = crud._get_type_breakdown(1, date.min, date.max, mock_db)
-        assert result == []
+        assert crud._type_breakdown([]) == []
 
-    def test_with_known_type_filter(self, mock_db):
+    def test_the_most_frequent_type_comes_first_then_by_type_id(self):
         import modules.activities.activity.summary_crud as crud
 
-        row = MagicMock()
-        row.activity_type = 1
-        row.total_distance = 5000.0
-        row.total_duration = 1800.0
-        row.total_elevation_gain = 50.0
-        row.total_calories = 250.0
-        row.activity_count = 1
-        mock_db.execute.return_value.all.return_value = [row]
-        result = crud._get_type_breakdown(1, date.min, date.max, mock_db, activity_type="running")
-        assert len(result) == 1
-
-    def test_with_unknown_type_filter(self, mock_db):
-        import modules.activities.activity.summary_crud as crud
-
-        result = crud._get_type_breakdown(1, date.min, date.max, mock_db, activity_type="unknown_sport")
-        assert result == []
+        rows = [_activity_row(activity_type=4), _activity_row(activity_type=2), _activity_row(activity_type=2)]
+        rows.append(_activity_row(activity_type=1))
+        result = crud._type_breakdown(rows)
+        assert [(item.activity_type_id, item.activity_count) for item in result] == [(2, 2), (1, 1), (4, 1)]
 
 
 class TestLocalTimeBuckets:
