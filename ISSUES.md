@@ -9,6 +9,23 @@ Terms used here:
 - **The SDK** is `stackencrypt`, from `languages/python` in the `cipherstash/stack` repository.
 - An **order term** is a value stored with an encrypted value. It sorts in the same order as the plaintext. `eql_v4.ord_term(col)` returns it.
 
+## Where the SDK and EQL need to grow
+
+The port encrypts the user identity columns, and the activity text and metric columns. The app works in a browser with these columns encrypted. It is a proof of concept, not a finished port.
+
+These are the changes the SDK and EQL need, the most important first:
+
+1. **Decryption speed (item 8).** A search spent up to 1,083 ms in the SDK, and up to 8 ms in PostgreSQL. The probable cause is the ZeroKMS key round trip.
+2. **Counting and pages with a match search (item 8).** The SDK removes false matches after the query. So an app must load every match to count them or cut a page.
+3. **A plain `ORDER BY` returns a wrong order, with no error (item 1).** The SQLAlchemy layer avoids it. Raw SQL and other tools do not.
+4. **A second EQL install drops the encrypted indexes, with no error (item 2).**
+5. **Building a query term calls ZeroKMS (item 3).** So a unit test with a mock session cannot test a filter on an encrypted column. The SDK needs a test double.
+6. **A `Numeric` field refuses a `float` (item 12).** Each app must convert the value itself.
+7. **The short search term rules are not documented (item 7).**
+8. **`TextSearch` adds an equality index that an app may never use (item 9).**
+
+SQL cannot add encrypted values, so an app adds up totals in Python (item 11). That follows from the encryption. It is not a gap in the SDK.
+
 | Number | Where the fix belongs | Summary |
 |---|---|---|
 | 1 | EQL | A plain `ORDER BY` on an encrypted column returns a wrong order. |
@@ -267,7 +284,27 @@ So when a search term is given, `count_user_activities` and `get_user_activities
 
 ### Effect on Endurain
 
-The results are correct. A search that matches many activities is slower than before. This has not been measured.
+The results are correct. A search is slower than before.
+
+### Measurement
+
+On 12 November 2026, 8 searches ran in one Python process against a test database with 7 activities. Each search matched 7 rows or fewer.
+
+| Part of the search | Time |
+|---|---|
+| Building the search term | 0 to 2 ms |
+| The query in PostgreSQL | 2 to 8 ms |
+| Decrypting the rows, and removing false matches, in the SDK | 3 to 1,083 ms |
+
+The same term on the same rows took 10 ms once and over 900 ms another time. A list with no search took 12 ms. The first search in a new process took 4.5 seconds to build the search term.
+
+The app ran on a residential internet connection in Tokyo. ZeroKMS for the workspace is in `ap-southeast-2` (Sydney), from the workspace CRN. Decryption needs keys from ZeroKMS. So the probable cause of the variation is the network round trip for those keys between Tokyo and Sydney. Nobody has timed the ZeroKMS calls themselves to confirm this.
+
+The frontend also waits 400 ms after the last keystroke before it sends a search.
+
+### Proposal
+
+Time the ZeroKMS calls in one search, with `STASH_STACK_LOG=debug`. Then decide whether the SDK can reuse keys between requests, or needs fewer calls for each request.
 
 ## 9. TextSearch adds an equality index that Endurain never uses
 
