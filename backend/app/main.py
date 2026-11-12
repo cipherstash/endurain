@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi.middleware import SlowAPIMiddleware
+from stackencrypt.sqlalchemy import configure_encryption
 from starlette.middleware.sessions import SessionMiddleware
 
 import core.async_bridge as core_async_bridge
@@ -54,6 +55,7 @@ import modules.server_settings.schema as server_settings_schema
 import modules.server_settings.utils as server_settings_utils
 import modules.strava.provider_registry as strava_provider_registry
 import modules.strava.scheduled_jobs as strava_scheduled_jobs
+import modules.users.users.models as users_models
 from api import router as api_router
 from core.database import SessionLocal
 from core.database import engine as core_db_engine
@@ -215,6 +217,10 @@ async def startup_event(fastapi_app: FastAPI) -> None:
 
     # Phase 1: critical pre-flight tasks.
     _run_alembic_migrations()
+    # Encrypt and decrypt the users' identity columns with CipherStash, through
+    # every engine, from here on. The migration that made them encrypted
+    # encrypts its rows itself.
+    configure_encryption([users_models.Users])
     core_migrations.bootstrap_substrate_schema()
     await core_migrations.check_migrations()
     # The composition root collects each module's own declaration; the scheduler

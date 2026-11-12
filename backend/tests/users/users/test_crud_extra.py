@@ -177,95 +177,146 @@ class TestGetUsersWithPagination:
         assert exc.value.status_code == 500
 
 
+@pytest.fixture
+def users_db(pg_factory):
+    """A PostgreSQL session holding two users.
+
+    The username and email columns are encrypted. A filter on them builds a
+    CipherStash query term before the statement runs, so these lookups need a
+    real database and credentials, not a mock session.
+    """
+    import modules.users.users.models as users_models
+
+    with pg_factory() as db:
+        for user_id, username in ((1, "testuser"), (2, "otherperson")):
+            db.add(
+                users_models.Users(
+                    id=user_id,
+                    name=f"User {user_id}",
+                    username=username,
+                    email=f"{username}@example.com",
+                    preferred_language="us",
+                    access_type="regular",
+                )
+            )
+        db.commit()
+    session = pg_factory()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 class TestGetUserByUsername:
     """get_user_by_username: exact and partial match."""
 
-    def test_exact_match_found(self):
+    def test_exact_match_found(self, users_db):
         from modules.users.users.crud import get_user_by_username
 
-        mock_db = MagicMock(spec=Session)
-        mock_user = MagicMock()
-        mock_db.execute.return_value.scalar_one_or_none.return_value = mock_user
+        result = get_user_by_username("TestUser", users_db)
 
-        result = get_user_by_username("TestUser", mock_db)
+        assert result is not None
+        assert result.id == 1
 
-        assert result == mock_user
-
-    def test_exact_match_not_found(self):
+    def test_exact_match_not_found(self, users_db):
         from modules.users.users.crud import get_user_by_username
 
-        mock_db = MagicMock(spec=Session)
-        mock_db.execute.return_value.scalar_one_or_none.return_value = None
-
-        result = get_user_by_username("Unknown", mock_db)
+        result = get_user_by_username("Unknown", users_db)
 
         assert result is None
 
-    def test_contains_found(self):
+    def test_contains_found(self, users_db):
         from modules.users.users.crud import get_user_by_username
 
-        mock_db = MagicMock(spec=Session)
-        mock_user = MagicMock()
-        mock_db.execute.return_value.scalars.return_value.all.return_value = [mock_user]
+        result = get_user_by_username("test", users_db, contains=True)
 
-        result = get_user_by_username("test", mock_db, contains=True)
+        assert [user.id for user in result] == [1]
 
-        assert result == [mock_user]
-
-    def test_contains_empty(self):
+    def test_contains_empty(self, users_db):
         from modules.users.users.crud import get_user_by_username
 
-        mock_db = MagicMock(spec=Session)
-        mock_db.execute.return_value.scalars.return_value.all.return_value = []
-
-        result = get_user_by_username("zzz", mock_db, contains=True)
+        result = get_user_by_username("zzz", users_db, contains=True)
 
         assert result == []
 
-    def test_db_error(self):
+    def test_db_error(self, users_db):
         from modules.users.users.crud import get_user_by_username
 
-        mock_db = MagicMock(spec=Session)
-        mock_db.execute.side_effect = SQLAlchemyError("DB error")
-
-        with pytest.raises(core_exceptions.ProcessingError) as exc:
-            get_user_by_username("test", mock_db)
+        with (
+            patch.object(users_db, "execute", side_effect=SQLAlchemyError("DB error")),
+            pytest.raises(core_exceptions.ProcessingError) as exc,
+        ):
+            get_user_by_username("test", users_db)
         assert exc.value.status_code == 500
 
 
 class TestGetUserByEmail:
     """get_user_by_email: case-insensitive email lookup."""
 
-    def test_found(self):
+    def test_found(self, users_db):
         from modules.users.users.crud import get_user_by_email
 
-        mock_db = MagicMock(spec=Session)
-        mock_user = MagicMock()
-        mock_db.execute.return_value.scalar_one_or_none.return_value = mock_user
+        result = get_user_by_email("TestUser@Example.COM", users_db)
 
-        result = get_user_by_email("Test@Example.COM", mock_db)
+        assert result is not None
+        assert result.id == 1
 
-        assert result == mock_user
-
-    def test_not_found(self):
+    def test_not_found(self, users_db):
         from modules.users.users.crud import get_user_by_email
 
-        mock_db = MagicMock(spec=Session)
-        mock_db.execute.return_value.scalar_one_or_none.return_value = None
-
-        result = get_user_by_email("nonexistent@example.com", mock_db)
+        result = get_user_by_email("nonexistent@example.com", users_db)
 
         assert result is None
 
-    def test_db_error(self):
+    def test_db_error(self, users_db):
         from modules.users.users.crud import get_user_by_email
 
-        mock_db = MagicMock(spec=Session)
-        mock_db.execute.side_effect = SQLAlchemyError("DB error")
-
-        with pytest.raises(core_exceptions.ProcessingError) as exc:
-            get_user_by_email("test@example.com", mock_db)
+        with (
+            patch.object(users_db, "execute", side_effect=SQLAlchemyError("DB error")),
+            pytest.raises(core_exceptions.ProcessingError) as exc,
+        ):
+            get_user_by_email("test@example.com", users_db)
         assert exc.value.status_code == 500
+
+
+class TestGetUsersWithPaginationOrder:
+    """get_users_with_pagination sorts by the encrypted username.
+
+    A plain ORDER BY on an encrypted column sorts the stored JSON, which gives
+    a wrong order. The CipherStash SDK sorts by the username's order term.
+    """
+
+    @pytest.fixture
+    def three_users_db(self, users_db):
+        import modules.users.users.models as users_models
+
+        # Inserted after users 1 and 2, but first in username order.
+        users_db.add(
+            users_models.Users(
+                id=3,
+                name="User 3",
+                username="aaron",
+                email="aaron@example.com",
+                preferred_language="us",
+                access_type="regular",
+            )
+        )
+        users_db.commit()
+        return users_db
+
+    def test_users_come_back_in_username_order(self, three_users_db):
+        from modules.users.users.crud import get_users_with_pagination
+
+        result = get_users_with_pagination(three_users_db)
+
+        assert [user.username for user in result] == ["aaron", "otherperson", "testuser"]
+
+    def test_a_page_holds_the_next_users_in_username_order(self, three_users_db):
+        from modules.users.users.crud import get_users_with_pagination
+
+        result = get_users_with_pagination(three_users_db, page_number=2, num_records=2)
+
+        assert [user.username for user in result] == ["testuser"]
 
 
 class TestGetUserById:

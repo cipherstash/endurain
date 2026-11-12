@@ -45,6 +45,8 @@ dependencies = [
     # Pinned below the next minor: JASIL is pre-1.0 and documents breaking
     # changes on minor versions.
     "jasil[fastapi,geocoding,jobs,migrations]>=0.6.1,<0.7.0",
+    # CipherStash Python SDK, built from a local checkout of cipherstash/stack.
+    "stackencrypt",
 ]
 
 [project.optional-dependencies]
@@ -100,6 +102,9 @@ exclude-newer = "30 days"
 # Publishing with PEP 740 attestations, so it is exempt from the quarantine the
 # cutoff applies to third-party releases. Every other dependency keeps it.
 exclude-newer-package = { jasil = false }
+
+[tool.uv.sources]
+stackencrypt = { path = "../../stack/languages/python", editable = false }
 
 [[tool.uv.index]]
 name = "pypi"

@@ -5,21 +5,23 @@ stores a JSON ``null`` rather than SQL ``NULL``, which a mocked session cannot s
 """
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 import modules.users.users_integrations.crud as integrations_crud
 import modules.users.users_integrations.models as integrations_models
-from tests._helpers.db import create_sqlite_session
+from tests._helpers.db import ensure_user
 
 
 @pytest.fixture
-def db():
-    session = create_sqlite_session()
+def db(pg_factory):
+    session = pg_factory()
     yield session
     session.close()
-    session.bind.dispose()
 
 
 def _link(db, user_id: int, *, strava: bool = False, garmin: dict | None = None) -> None:
+    # PostgreSQL enforces the users.id foreign key.
+    ensure_user(sessionmaker(bind=db.bind), user_id)
     db.add(
         integrations_models.UsersIntegrations(
             user_id=user_id,

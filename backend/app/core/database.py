@@ -14,6 +14,7 @@ from sqlalchemy.orm import (
     mapped_column,
     sessionmaker,
 )
+from stackencrypt.sqlalchemy import eql_type_map
 
 import core.config as core_config
 
@@ -78,7 +79,13 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Create a base class for declarative models
 class Base(DeclarativeBase):
-    """Base class for all ORM models."""
+    """Base class for all ORM models.
+
+    ``eql_type_map`` gives each field declared with a CipherStash marker, such
+    as ``Annotated[str, TextEq]``, its encrypted (EQL) column type.
+    """
+
+    type_annotation_map = eql_type_map
 
 
 # JASIL's companion tables (event_log, event_outbox, processing_jobs) are mapped

@@ -1,10 +1,12 @@
 """User database models."""
 
 from datetime import date as date_type
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
-from sqlalchemy import String
+import stackencrypt
+from sqlalchemy import Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from stackencrypt import Ignore, Text, TextEq, TextSearch
 
 from core.database import Base
 
@@ -25,9 +27,15 @@ if TYPE_CHECKING:
     from modules.users.users_privacy_settings.models import UsersPrivacySettings
 
 
+@stackencrypt.model("users")
 class Users(Base):
     """
     User account and profile information.
+
+    ``name``, ``username``, ``email`` and ``city`` are encrypted with
+    CipherStash. ``email`` is searched by equality. ``username`` is searched by
+    equality and by match, and is sorted. ``name`` and ``city`` are stored
+    only. Every other column is plaintext, marked ``Ignore``.
 
     Attributes:
         id: Primary key.
@@ -68,102 +76,102 @@ class Users(Base):
     """
 
     __tablename__ = "users"
+    # An encrypted value has new random ciphertext each time, so a unique
+    # constraint on the column never finds a duplicate. These unique indexes
+    # are on the equality term, which is the same for equal plaintexts. They
+    # also serve the equality searches.
+    __table_args__ = (
+        Index("ix_users_email", text("eql_v4.eq_term(email)"), unique=True),
+        Index("ix_users_username", text("eql_v4.eq_term(username)"), unique=True),
+    )
 
-    id: Mapped[int] = mapped_column(
+    id: Mapped[Annotated[int, Ignore]] = mapped_column(
         primary_key=True,
         autoincrement=True,
     )
-    name: Mapped[str] = mapped_column(
-        String(250),
+    name: Mapped[Annotated[str, Text]] = mapped_column(
         nullable=False,
         comment="User real name (May include spaces)",
     )
-    username: Mapped[str] = mapped_column(
-        String(250),
+    username: Mapped[Annotated[str, TextSearch]] = mapped_column(
         nullable=False,
-        unique=True,
-        index=True,
         comment="User username (letters, numbers, and dots allowed)",
     )
-    email: Mapped[str] = mapped_column(
-        String(250),
+    email: Mapped[Annotated[str, TextEq]] = mapped_column(
         nullable=False,
-        unique=True,
-        index=True,
         comment="User email (max 250 characters)",
     )
-    city: Mapped[str | None] = mapped_column(
-        String(250),
+    city: Mapped[Annotated[str | None, Text]] = mapped_column(
         nullable=True,
         comment="User city",
     )
-    birthdate: Mapped[date_type | None] = mapped_column(
+    birthdate: Mapped[Annotated[date_type | None, Ignore]] = mapped_column(
         nullable=True,
         comment="User birthdate (date)",
     )
-    preferred_language: Mapped[str] = mapped_column(
+    preferred_language: Mapped[Annotated[str, Ignore]] = mapped_column(
         String(35),
         nullable=False,
         comment="User preferred BCP 47 language tag (en, pt-PT, zh-Hans, others)",
     )
-    gender: Mapped[str] = mapped_column(
+    gender: Mapped[Annotated[str, Ignore]] = mapped_column(
         String(20),
         default="male",
         nullable=False,
         comment="User gender (male, female, unspecified)",
     )
-    units: Mapped[str] = mapped_column(
+    units: Mapped[Annotated[str, Ignore]] = mapped_column(
         String(20),
         default="metric",
         nullable=False,
         comment="User units (metric, imperial)",
     )
-    height: Mapped[int | None] = mapped_column(
+    height: Mapped[Annotated[int | None, Ignore]] = mapped_column(
         nullable=True,
         comment="User height in centimeters",
     )
-    max_heart_rate: Mapped[int | None] = mapped_column(
+    max_heart_rate: Mapped[Annotated[int | None, Ignore]] = mapped_column(
         nullable=True,
         comment="User maximum heart rate (bpm)",
     )
-    access_type: Mapped[str] = mapped_column(
+    access_type: Mapped[Annotated[str, Ignore]] = mapped_column(
         String(20),
         nullable=False,
         comment="User type (regular, admin)",
     )
-    photo_path: Mapped[str | None] = mapped_column(
+    photo_path: Mapped[Annotated[str | None, Ignore]] = mapped_column(
         String(250),
         nullable=True,
         comment="User photo path",
     )
-    active: Mapped[bool] = mapped_column(
+    active: Mapped[Annotated[bool, Ignore]] = mapped_column(
         default=True,
         nullable=False,
         comment="Whether the user is active (true - yes, false - no)",
     )
-    first_day_of_week: Mapped[str] = mapped_column(
+    first_day_of_week: Mapped[Annotated[str, Ignore]] = mapped_column(
         String(20),
         default="monday",
         nullable=False,
         comment="User first day of week (sunday, monday, etc.)",
     )
-    currency: Mapped[str] = mapped_column(
+    currency: Mapped[Annotated[str, Ignore]] = mapped_column(
         String(20),
         default="euro",
         nullable=False,
         comment="User currency (euro, dollar, pound)",
     )
-    timezone: Mapped[str | None] = mapped_column(
+    timezone: Mapped[Annotated[str | None, Ignore]] = mapped_column(
         String(250),
         nullable=True,
         comment=("User IANA timezone, used as the fallback for activities with no GPS track"),
     )
-    email_verified: Mapped[bool] = mapped_column(
+    email_verified: Mapped[Annotated[bool, Ignore]] = mapped_column(
         default=False,
         nullable=False,
         comment=("Whether the user's email address has been verified (true - yes, false - no)"),
     )
-    pending_admin_approval: Mapped[bool] = mapped_column(
+    pending_admin_approval: Mapped[Annotated[bool, Ignore]] = mapped_column(
         default=False,
         nullable=False,
         comment=("Whether the user is pending admin approval for activation (true - yes, false - no)"),

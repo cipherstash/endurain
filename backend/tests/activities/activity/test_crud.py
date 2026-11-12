@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy.dialects import postgresql
-from tests._helpers.db import create_sqlite_session, setup_mock_execute
+from tests._helpers.db import ensure_user, setup_mock_execute
 from tests._helpers.models import mock_model
 
 import core.exceptions as core_exceptions
@@ -726,19 +726,16 @@ class TestGetActivityByIdFromUserIdOrHasVisibility:
 
 
 @pytest.fixture
-def sqlite_session():
-    """Real in-memory SQLite session for access-control behavior tests."""
-    session = create_sqlite_session()
+def pg_session(pg_factory):
+    """Real PostgreSQL session for access-control behavior tests."""
+    # PostgreSQL enforces the users.id foreign key of the activities.
+    for user_id in (1, 2):
+        ensure_user(pg_factory, user_id)
+    session = pg_factory()
     try:
         yield session
     finally:
         session.close()
-        # StaticPool keeps the single sqlite3 connection open for the life of
-        # the engine; session.close() alone doesn't release it, which leaks an
-        # unclosed sqlite3.Connection until GC eventually collects it (showing
-        # up as a ResourceWarning on an unrelated, later test). Dispose the
-        # engine explicitly to close the connection deterministically.
-        session.bind.dispose()
 
 
 def _public_activity(**overrides):
@@ -788,15 +785,15 @@ class TestGetActivityByIdIfIsPublic:
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
     @patch("modules.activities.activity.crud.activity_serializers.apply_visibility_mask")
-    def test_serves_public_activity(self, mock_mask, mock_ser, sqlite_session):
+    def test_serves_public_activity(self, mock_mask, mock_ser, pg_session):
         """Regression guard: a public, non-hidden activity is still served after the is_hidden filter."""
         import modules.activities.activity.crud as crud
 
         mock_ser.return_value = MagicMock()
-        sqlite_session.add(_public_activity(id=1, visibility=0, is_hidden=False))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, visibility=0, is_hidden=False))
+        pg_session.commit()
 
-        result = crud.get_activity_by_id_if_is_public(activity_id=1, db=sqlite_session)
+        result = crud.get_activity_by_id_if_is_public(activity_id=1, db=pg_session)
 
         assert result is not None
         mock_ser.assert_called_once()
@@ -804,60 +801,60 @@ class TestGetActivityByIdIfIsPublic:
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
     @patch("modules.activities.activity.crud.activity_serializers.apply_visibility_mask")
-    def test_excludes_hidden_activities(self, mock_mask, mock_ser, sqlite_session):
+    def test_excludes_hidden_activities(self, mock_mask, mock_ser, pg_session):
         """A hidden activity must never be served publicly, even when its visibility is public."""
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, visibility=0, is_hidden=True))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, visibility=0, is_hidden=True))
+        pg_session.commit()
 
-        result = crud.get_activity_by_id_if_is_public(activity_id=1, db=sqlite_session)
+        result = crud.get_activity_by_id_if_is_public(activity_id=1, db=pg_session)
 
         assert result is None
         mock_ser.assert_not_called()
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
     @patch("modules.activities.activity.crud.activity_serializers.apply_visibility_mask")
-    def test_excludes_non_public_visibility(self, mock_mask, mock_ser, sqlite_session):
+    def test_excludes_non_public_visibility(self, mock_mask, mock_ser, pg_session):
         """Only ``visibility == 0`` (public) activities are served."""
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, visibility=1, is_hidden=False))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, visibility=1, is_hidden=False))
+        pg_session.commit()
 
-        result = crud.get_activity_by_id_if_is_public(activity_id=1, db=sqlite_session)
+        result = crud.get_activity_by_id_if_is_public(activity_id=1, db=pg_session)
 
         assert result is None
         mock_ser.assert_not_called()
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
     @patch("modules.activities.activity.crud.activity_serializers.apply_visibility_mask")
-    def test_excludes_live_strava_api_activity(self, mock_mask, mock_ser, sqlite_session):
+    def test_excludes_live_strava_api_activity(self, mock_mask, mock_ser, pg_session):
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, visibility=0, is_hidden=False, strava_activity_id=123))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, visibility=0, is_hidden=False, strava_activity_id=123))
+        pg_session.commit()
 
-        result = crud.get_activity_by_id_if_is_public(activity_id=1, db=sqlite_session)
+        result = crud.get_activity_by_id_if_is_public(activity_id=1, db=pg_session)
 
         assert result is None
         mock_ser.assert_not_called()
 
-    def test_not_found(self, sqlite_session):
+    def test_not_found(self, pg_session):
         """A non-existent activity id returns None."""
         import modules.activities.activity.crud as crud
 
-        assert crud.get_activity_by_id_if_is_public(activity_id=999, db=sqlite_session) is None
+        assert crud.get_activity_by_id_if_is_public(activity_id=999, db=pg_session) is None
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_excludes_strava_activities(self, mock_ser, sqlite_session):
+    def test_excludes_strava_activities(self, mock_ser, pg_session):
         """A public activity synced from Strava is not served."""
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, strava_activity_id=123))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, strava_activity_id=123))
+        pg_session.commit()
 
-        assert crud.get_activity_by_id_if_is_public(activity_id=1, db=sqlite_session) is None
+        assert crud.get_activity_by_id_if_is_public(activity_id=1, db=pg_session) is None
         mock_ser.assert_not_called()
 
 
@@ -865,41 +862,41 @@ class TestStravaActivityVisibility:
     """Activities synced from Strava are shown only to their owner.
 
     The filter lives in the SQL ``WHERE`` clause, so it is exercised against a
-    real in-memory SQLite database. User 2 follows user 1 (passed as
+    real PostgreSQL database. User 2 follows user 1 (passed as
     ``followee_ids``), who owns activity 1 and the Strava-synced activity 2.
     """
 
     @pytest.fixture(autouse=True)
-    def _seed(self, sqlite_session):
-        sqlite_session.add(_public_activity(id=1, user_id=1))
-        sqlite_session.add(_public_activity(id=2, user_id=1, strava_activity_id=123))
-        sqlite_session.commit()
+    def _seed(self, pg_session):
+        pg_session.add(_public_activity(id=1, user_id=1))
+        pg_session.add(_public_activity(id=2, user_id=1, strava_activity_id=123))
+        pg_session.commit()
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_owner_sees_own_strava_activity(self, mock_ser, sqlite_session):
+    def test_owner_sees_own_strava_activity(self, mock_ser, pg_session):
         """The owner can still open their own Strava-synced activity."""
         import modules.activities.activity.crud as crud
 
-        result = crud.get_activity_by_id_from_user_id_or_has_visibility(activity_id=2, user_id=1, db=sqlite_session)
+        result = crud.get_activity_by_id_from_user_id_or_has_visibility(activity_id=2, user_id=1, db=pg_session)
         assert result is not None
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_follower_cannot_open_strava_activity(self, mock_ser, sqlite_session):
+    def test_follower_cannot_open_strava_activity(self, mock_ser, pg_session):
         """A follower cannot open a Strava-synced activity."""
         import modules.activities.activity.crud as crud
 
         result = crud.get_activity_by_id_from_user_id_or_has_visibility(
-            activity_id=2, user_id=2, db=sqlite_session, followee_ids=[1]
+            activity_id=2, user_id=2, db=pg_session, followee_ids=[1]
         )
         assert result is None
 
     @patch("modules.activities.activity.crud.activity_serializers.apply_visibility_mask")
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_follower_profile_list_excludes_strava_activity(self, mock_ser, mock_mask, sqlite_session):
+    def test_follower_profile_list_excludes_strava_activity(self, mock_ser, mock_mask, pg_session):
         """The profile list a follower sees leaves out the Strava-synced activity."""
         import modules.activities.activity.crud as crud
 
-        crud.get_user_activities(user_id=1, db=sqlite_session, user_is_owner=False, followee_ids=[2])
+        crud.get_user_activities(user_id=1, db=pg_session, user_is_owner=False, followee_ids=[2])
         assert [c.args[0].id for c in mock_ser.call_args_list] == [1]
 
 
@@ -917,27 +914,27 @@ class TestGetPublicActivityForChildRead:
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
     @patch("modules.activities.activity.crud.activity_serializers.apply_visibility_mask")
-    def test_excludes_hidden_activity(self, mock_mask, mock_ser, sqlite_session):
+    def test_excludes_hidden_activity(self, mock_mask, mock_ser, pg_session):
         """A hidden activity must not expose its child resources publicly."""
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, visibility=0, is_hidden=True))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, visibility=0, is_hidden=True))
+        pg_session.commit()
 
-        result = crud.get_public_activity_for_child_read(1, sqlite_session, hide_attr="hide_laps")
+        result = crud.get_public_activity_for_child_read(1, pg_session, hide_attr="hide_laps")
 
         assert result is None
         mock_ser.assert_not_called()
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
     @patch("modules.activities.activity.crud.activity_serializers.apply_visibility_mask")
-    def test_excludes_non_public_visibility(self, mock_mask, mock_ser, sqlite_session):
+    def test_excludes_non_public_visibility(self, mock_mask, mock_ser, pg_session):
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, visibility=1, is_hidden=False))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, visibility=1, is_hidden=False))
+        pg_session.commit()
 
-        assert crud.get_public_activity_for_child_read(1, sqlite_session, hide_attr="hide_laps") is None
+        assert crud.get_public_activity_for_child_read(1, pg_session, hide_attr="hide_laps") is None
 
     @patch("modules.activities.activity.crud.get_activity_by_id_if_is_public")
     def test_disabled_public_links(self, mock_public, mock_db):
@@ -981,54 +978,54 @@ class TestGetViewableActivityByIdForUser:
     returning a parent activity's data, so a non-owner cannot read a private or
     followers-only activity's streams/laps/sets/steps by id. The public /
     followers / private / hidden filtering lives in the SQL ``WHERE`` clause, so
-    the access-control guarantees are exercised against a real in-memory SQLite
+    the access-control guarantees are exercised against a real PostgreSQL
     database; only the error branch stays on the mock-DB path.
     """
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_owner_sees_own_private_activity(self, mock_ser, sqlite_session):
+    def test_owner_sees_own_private_activity(self, mock_ser, pg_session):
         import modules.activities.activity.crud as crud
 
         mock_ser.return_value = MagicMock()
-        sqlite_session.add(_public_activity(id=1, user_id=2, visibility=2, is_hidden=False))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, user_id=2, visibility=2, is_hidden=False))
+        pg_session.commit()
 
-        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=2, db=sqlite_session)
+        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=2, db=pg_session)
 
         assert result is not None
         # Returned unmasked (no apply_visibility_mask) so callers can read hide_* flags.
         assert mock_ser.call_args.args[0].id == 1
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_non_owner_denied_private_activity(self, mock_ser, sqlite_session):
+    def test_non_owner_denied_private_activity(self, mock_ser, pg_session):
         """A non-owner must NOT read a private (visibility=2) activity by id."""
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, user_id=2, visibility=2, is_hidden=False))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, user_id=2, visibility=2, is_hidden=False))
+        pg_session.commit()
 
-        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=sqlite_session)
+        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=pg_session)
 
         assert result is None
         mock_ser.assert_not_called()
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_non_owner_sees_public_activity(self, mock_ser, sqlite_session):
+    def test_non_owner_sees_public_activity(self, mock_ser, pg_session):
         import modules.activities.activity.crud as crud
 
         mock_ser.return_value = MagicMock()
-        sqlite_session.add(_public_activity(id=1, user_id=2, visibility=0, is_hidden=False))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, user_id=2, visibility=0, is_hidden=False))
+        pg_session.commit()
 
-        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=sqlite_session)
+        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=pg_session)
 
         assert result is not None
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_non_owner_denied_live_strava_api_activity(self, mock_ser, sqlite_session):
+    def test_non_owner_denied_live_strava_api_activity(self, mock_ser, pg_session):
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(
+        pg_session.add(
             _public_activity(
                 id=1,
                 user_id=2,
@@ -1037,19 +1034,19 @@ class TestGetViewableActivityByIdForUser:
                 strava_activity_id=123,
             )
         )
-        sqlite_session.commit()
+        pg_session.commit()
 
-        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=sqlite_session)
+        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=pg_session)
 
         assert result is None
         mock_ser.assert_not_called()
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_owner_sees_own_live_strava_api_activity(self, mock_ser, sqlite_session):
+    def test_owner_sees_own_live_strava_api_activity(self, mock_ser, pg_session):
         import modules.activities.activity.crud as crud
 
         mock_ser.return_value = MagicMock()
-        sqlite_session.add(
+        pg_session.add(
             _public_activity(
                 id=1,
                 user_id=2,
@@ -1058,103 +1055,103 @@ class TestGetViewableActivityByIdForUser:
                 strava_activity_id=123,
             )
         )
-        sqlite_session.commit()
+        pg_session.commit()
 
-        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=2, db=sqlite_session)
+        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=2, db=pg_session)
 
         assert result is not None
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_non_owner_denied_hidden_public_activity(self, mock_ser, sqlite_session):
+    def test_non_owner_denied_hidden_public_activity(self, mock_ser, pg_session):
         """A hidden activity is never visible to a non-owner, even when public."""
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, user_id=2, visibility=0, is_hidden=True))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, user_id=2, visibility=0, is_hidden=True))
+        pg_session.commit()
 
-        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=sqlite_session)
+        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=pg_session)
 
         assert result is None
         mock_ser.assert_not_called()
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_non_owner_denied_followers_only_without_follow(self, mock_ser, sqlite_session):
+    def test_non_owner_denied_followers_only_without_follow(self, mock_ser, pg_session):
         """A followers-only (visibility=1) activity is denied without an accepted follow."""
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, user_id=2, visibility=1, is_hidden=False))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, user_id=2, visibility=1, is_hidden=False))
+        pg_session.commit()
 
-        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=sqlite_session)
+        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=pg_session)
 
         assert result is None
         mock_ser.assert_not_called()
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_non_owner_denied_followers_only_with_pending_follow(self, mock_ser, sqlite_session):
+    def test_non_owner_denied_followers_only_with_pending_follow(self, mock_ser, pg_session):
         """A pending (unaccepted) follow does not grant followers-only access."""
         import modules.activities.activity.crud as crud
         import modules.followers.models as followers_models
 
-        sqlite_session.add(_public_activity(id=1, user_id=2, visibility=1, is_hidden=False))
-        sqlite_session.add(followers_models.Follower(follower_id=1, followee_id=2, status="pending"))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, user_id=2, visibility=1, is_hidden=False))
+        pg_session.add(followers_models.Follower(follower_id=1, followee_id=2, status="pending"))
+        pg_session.commit()
 
-        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=sqlite_session)
+        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=pg_session)
 
         assert result is None
         mock_ser.assert_not_called()
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_non_owner_sees_followers_only_with_accepted_follow(self, mock_ser, sqlite_session):
+    def test_non_owner_sees_followers_only_with_accepted_follow(self, mock_ser, pg_session):
         """An accepted follower may read a followers-only activity."""
         import modules.activities.activity.crud as crud
         import modules.followers.models as followers_models
 
         mock_ser.return_value = MagicMock()
-        sqlite_session.add(_public_activity(id=1, user_id=2, visibility=1, is_hidden=False))
-        sqlite_session.add(followers_models.Follower(follower_id=1, followee_id=2, status="accepted"))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, user_id=2, visibility=1, is_hidden=False))
+        pg_session.add(followers_models.Follower(follower_id=1, followee_id=2, status="accepted"))
+        pg_session.commit()
 
         # The accepted follow is resolved by the caller now, not mid-SELECT.
         result = crud.get_viewable_activity_by_id_for_user(
-            activity_id=1, user_id=1, db=sqlite_session, followee_ids=[2]
+            activity_id=1, user_id=1, db=pg_session, followee_ids=[2]
         )
 
         assert result is not None
         assert mock_ser.call_args.args[0].id == 1
 
-    def test_not_found(self, sqlite_session):
+    def test_not_found(self, pg_session):
         import modules.activities.activity.crud as crud
 
-        assert crud.get_viewable_activity_by_id_for_user(activity_id=999, user_id=1, db=sqlite_session) is None
+        assert crud.get_viewable_activity_by_id_for_user(activity_id=999, user_id=1, db=pg_session) is None
 
 
 class TestStravaApiVisibilityPolicy:
     """Live Strava API rows remain owner-only across list and detail reads."""
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
-    def test_non_owner_list_excludes_live_api_but_keeps_file_import(self, mock_ser, sqlite_session):
+    def test_non_owner_list_excludes_live_api_but_keeps_file_import(self, mock_ser, pg_session):
         import modules.activities.activity.crud as crud
 
         mock_ser.side_effect = lambda activity: MagicMock(id=activity.id)
-        sqlite_session.add_all(
+        pg_session.add_all(
             [
                 _public_activity(id=1, user_id=2, strava_activity_id=123),
                 _public_activity(id=2, user_id=2, strava_activity_id=None),
             ]
         )
-        sqlite_session.commit()
+        pg_session.commit()
 
         activities = crud.get_user_activities_with_pagination(
             user_id=2,
-            db=sqlite_session,
+            db=pg_session,
             user_is_owner=False,
             followee_ids=[],
         )
         count = crud.count_user_activities(
             user_id=2,
-            db=sqlite_session,
+            db=pg_session,
             user_is_owner=False,
             followee_ids=[],
         )
@@ -1165,16 +1162,16 @@ class TestStravaApiVisibilityPolicy:
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
     @patch("modules.activities.activity.crud.activity_serializers.apply_visibility_mask")
-    def test_non_owner_detail_denies_live_api_activity(self, mock_mask, mock_ser, sqlite_session):
+    def test_non_owner_detail_denies_live_api_activity(self, mock_mask, mock_ser, pg_session):
         import modules.activities.activity.crud as crud
 
-        sqlite_session.add(_public_activity(id=1, user_id=2, strava_activity_id=123))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, user_id=2, strava_activity_id=123))
+        pg_session.commit()
 
         result = crud.get_activity_by_id_from_user_id_or_has_visibility(
             activity_id=1,
             user_id=1,
-            db=sqlite_session,
+            db=pg_session,
         )
 
         assert result is None
@@ -1182,17 +1179,17 @@ class TestStravaApiVisibilityPolicy:
 
     @patch("modules.activities.activity.crud.activity_serializers.to_read_schema")
     @patch("modules.activities.activity.crud.activity_serializers.apply_visibility_mask")
-    def test_owner_detail_keeps_live_api_activity(self, mock_mask, mock_ser, sqlite_session):
+    def test_owner_detail_keeps_live_api_activity(self, mock_mask, mock_ser, pg_session):
         import modules.activities.activity.crud as crud
 
         mock_ser.return_value = MagicMock()
-        sqlite_session.add(_public_activity(id=1, user_id=2, strava_activity_id=123))
-        sqlite_session.commit()
+        pg_session.add(_public_activity(id=1, user_id=2, strava_activity_id=123))
+        pg_session.commit()
 
         result = crud.get_activity_by_id_from_user_id_or_has_visibility(
             activity_id=1,
             user_id=2,
-            db=sqlite_session,
+            db=pg_session,
         )
 
         assert result is not None

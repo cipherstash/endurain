@@ -1,6 +1,7 @@
 from logging.config import fileConfig
 
 import jasil.orm as jasil_orm
+from stackencrypt.sqlalchemy import process_revision_directives, render_item
 
 from alembic import context
 
@@ -78,6 +79,9 @@ def run_migrations_offline() -> None:
         url=url,
         target_metadata=target_metadata,
         include_object=include_object,
+        # Write the encrypted users columns' EQL types into new migrations.
+        render_item=render_item,
+        process_revision_directives=process_revision_directives,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -103,6 +107,8 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             include_object=include_object,
+            render_item=render_item,
+            process_revision_directives=process_revision_directives,
         )
 
         with context.begin_transaction():

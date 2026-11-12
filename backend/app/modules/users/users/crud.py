@@ -375,13 +375,10 @@ def get_user_by_username(
     normalized_username = unquote(username).replace("+", " ").lower()
 
     if contains:
-        # Escape LIKE special characters to prevent SQL injection
-        escaped_username = normalized_username.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-
-        # Query users with username containing the search term
-        stmt = select(users_models.Users).where(
-            func.lower(users_models.Users.username).like(f"%{escaped_username}%", escape="\\")
-        )
+        # username is encrypted, so this is a CipherStash match search, not
+        # LIKE. It returns the users whose username holds every 3-character
+        # piece of the search term. Usernames are stored in lower case.
+        stmt = select(users_models.Users).where(users_models.Users.username.match(normalized_username))
         users: list[users_models.Users] = list(db.execute(stmt).scalars().all())
         return _transform_users(users)
     else:
