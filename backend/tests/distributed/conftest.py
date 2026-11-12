@@ -15,7 +15,12 @@ and CI need none of them.
     TEST_DATABASE_URL=postgresql+psycopg://endurain:test@localhost:55432/endurain_test \\
     TEST_REDIS_URL=redis://localhost:56379/0 \\
     TEST_S3_ENDPOINT_URL=http://localhost:59090 \\
+    TEST_EQL_BUNDLE=/path/to/cipherstash-encrypt-v4.sql \\
         uv run pytest -m distributed
+
+Each test installs the EQL v4 bundle that ``TEST_EQL_BUNDLE`` names into its
+new database, because migration 29 needs EQL. The API and worker processes
+encrypt the users columns, so CipherStash credentials must be set too.
 
 The database named by ``TEST_DATABASE_URL`` must be disposable (its name must
 contain ``test``); each test works in a database of its own beside it and drops
@@ -23,12 +28,13 @@ it afterwards. The Redis database is flushed and the S3 bucket emptied.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
 from tests.distributed.cluster import Cluster, ClusterConfig
 
-_REQUIRED = ("TEST_DATABASE_URL", "TEST_REDIS_URL", "TEST_S3_ENDPOINT_URL")
+_REQUIRED = ("TEST_DATABASE_URL", "TEST_REDIS_URL", "TEST_S3_ENDPOINT_URL", "TEST_EQL_BUNDLE")
 
 
 def pytest_collection_modifyitems(items):
@@ -49,6 +55,7 @@ def cluster(request, tmp_path):
         redis_url=os.environ["TEST_REDIS_URL"],
         s3_endpoint_url=os.environ["TEST_S3_ENDPOINT_URL"],
         s3_bucket=os.environ.get("TEST_S3_BUCKET", "endurain-test"),
+        eql_bundle=Path(os.environ["TEST_EQL_BUNDLE"]),
     )
     deployment = Cluster(config, tmp_path, name=request.node.name)
     try:

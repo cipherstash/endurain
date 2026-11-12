@@ -17,6 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from stackencrypt import StashError
 
 import core.decorators as core_decorators
 import core.logger as core_logger
@@ -375,13 +376,19 @@ def get_user_by_username(
     normalized_username = unquote(username).replace("+", " ").lower()
 
     if contains:
-        # Escape LIKE special characters to prevent SQL injection
-        escaped_username = normalized_username.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-
-        # Query users with username containing the search term
-        stmt = select(users_models.Users).where(
-            func.lower(users_models.Users.username).like(f"%{escaped_username}%", escape="\\")
-        )
+        # username is encrypted, so this is a CipherStash match search, not
+        # LIKE. It returns the users whose username holds every 3-character
+        # piece of the search term. A 2-character term must match a whole
+        # word. Usernames are stored in lower case.
+        stmt = select(users_models.Users)
+        try:
+            stmt = stmt.where(users_models.Users.username.match(normalized_username))
+        except StashError as error:
+            # One character gives a match search nothing to use, so no filter
+            # is applied. The old LIKE search for one letter matched almost
+            # every user.
+            if error.code != "stack_encrypt_empty_term_text":
+                raise
         users: list[users_models.Users] = list(db.execute(stmt).scalars().all())
         return _transform_users(users)
     else:

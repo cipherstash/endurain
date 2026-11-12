@@ -28,6 +28,8 @@ class TestRunWorkerProcess:
             patch("worker.jobs_service") as service,
             patch("worker.jasil_lifecycle") as lifecycle,
             patch("worker._install_signal_handlers") as install_signals,
+            # A real call builds a CipherStash Cipher, which needs credentials.
+            patch("worker.configure_encryption") as configure_encryption,
         ):
             cfg.settings.JOBS_ENABLED = True
             cfg.settings.JOBS_POLL_INTERVAL_SECONDS = 2.0
@@ -49,6 +51,7 @@ class TestRunWorkerProcess:
             call.register_durable_handlers(jobs_registry.registry),
         ]
         install_signals.assert_called_once_with(stop)
+        configure_encryption.assert_called_once_with(worker.encrypted_models.classes())
         service.run_job_worker.assert_called_once_with(role="worker", stop=stop)
         # Whatever the API's flag says, this process must present the standalone
         # topology, or ``run_job_worker`` refuses to start.
@@ -70,6 +73,7 @@ class TestRunWorkerProcess:
             patch("worker.jobs_service") as service,
             patch("worker.jasil_lifecycle") as lifecycle,
             patch("worker._install_signal_handlers"),
+            patch("worker.configure_encryption"),
         ):
             service.run_job_worker.side_effect = RuntimeError("boom")
             cfg.settings.JOBS_ENABLED = True

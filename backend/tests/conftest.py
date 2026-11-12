@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, close_all_sessions
 
 import modules.auth._internal.internal_dependencies as auth_internal_dependencies
 import modules.auth._internal.password_hasher as auth_password_hasher
@@ -13,6 +13,12 @@ import modules.auth._internal.security_stores as auth_security_stores
 import modules.auth._internal.token_manager as auth_token_manager
 import modules.auth.dependencies as auth_dependencies
 import modules.users.users.schema as user_schema
+from tests._helpers.db import (
+    POSTGRES_TEST_URL_ENV,
+    create_postgres_session_factory,
+    drop_postgres_schema,
+    postgres_test_url,
+)
 
 # Variables and constants
 DEFAULT_ROUTER_MODULES = [
@@ -28,6 +34,47 @@ DEFAULT_ROUTER_MODULES = [
 PUBLIC_ROUTER_MODULES = [
     "modules.server_settings.public_router",
 ]
+
+
+def pytest_collection_modifyitems(items):
+    """Mark every test that needs PostgreSQL so ``-m postgres`` selects it.
+
+    That is every test under ``tests/postgres/``, and every test that uses the
+    ``pg_factory`` fixture.
+    """
+    for item in items:
+        in_postgres_dir = "tests/postgres/" in str(item.fspath).replace("\\", "/")
+        if in_postgres_dir or "pg_factory" in getattr(item, "fixturenames", ()):
+            item.add_marker(pytest.mark.postgres)
+
+
+@pytest.fixture
+def pg_factory():
+    """A sessionmaker over a fresh schema in a real PostgreSQL test database.
+
+    For behaviour SQLite cannot reproduce: per-session connection isolation, a
+    failed flush poisoning the session until rollback, row locks, the unique
+    indexes the application leans on, and the users' CipherStash-encrypted
+    columns. The database named by ``TEST_DATABASE_URL`` must be disposable and
+    have EQL v4 installed, and CipherStash credentials must be set. The test is
+    skipped when ``TEST_DATABASE_URL`` is unset, so the default ``pytest`` run
+    needs no database.
+
+        docker run -d --rm --name endurain-test-pg -e POSTGRES_USER=endurain \\
+            -e POSTGRES_PASSWORD=test -e POSTGRES_DB=endurain_test -p 55432:5432 postgres:18
+        TEST_DATABASE_URL=postgresql+psycopg://endurain:test@localhost:55432/endurain_test \\
+            uv run pytest -m postgres
+    """
+    if postgres_test_url() is None:
+        pytest.skip(f"{POSTGRES_TEST_URL_ENV} is not set")
+    factory = create_postgres_session_factory()
+    try:
+        yield factory
+    finally:
+        # A session the test left open holds its transaction's locks, and the
+        # DROP TABLE below would wait for it forever.
+        close_all_sessions()
+        drop_postgres_schema(factory)
 
 
 @pytest.fixture(autouse=True)

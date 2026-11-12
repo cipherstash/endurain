@@ -2,9 +2,10 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Annotated
 
+import stackencrypt
 from sqlalchemy import (
-    DECIMAL,
     JSON,
     BigInteger,
     DateTime,
@@ -12,13 +13,31 @@ from sqlalchemy import (
     Index,
     String,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
+from stackencrypt import Ignore, Integer, IntegerOrd, Numeric, NumericOrd, Text, TextSearch
 
 from core.database import Base
 
+# The scale of the plaintext NUMERIC(20, 10) columns these fields replaced.
+_TEN_PLACES = Decimal("1E-10")
 
+
+@stackencrypt.model("activities")
 class Activity(Base):
     """Fitness activity record.
+
+    ``name``, ``city``, ``town`` and ``country`` are encrypted with CipherStash,
+    and searched by match and sorted. ``description`` and ``private_notes`` are
+    encrypted and stored only.
+
+    The activity metrics are encrypted too. ``distance``, ``calories``,
+    ``elevation_gain``, ``average_hr``, ``total_timer_time`` and ``pace`` can
+    be sorted. The others are stored only. SQL cannot add encrypted values, so
+    the summaries and gear totals add them up in Python.
+
+    Every other column is plaintext, marked ``Ignore``. ``timezone`` stays
+    plaintext, because the summaries pass it to PostgreSQL's ``timezone()``
+    function.
 
     Attributes:
         id: Primary key.
@@ -95,85 +114,77 @@ class Activity(Base):
         Index("uq_activities_user_dedup_key", "user_id", "dedup_key", unique=True),
     )
 
-    id: Mapped[int] = mapped_column(
+    id: Mapped[Annotated[int, Ignore]] = mapped_column(
         primary_key=True,
         autoincrement=True,
     )
-    user_id: Mapped[int] = mapped_column(
+    user_id: Mapped[Annotated[int, Ignore]] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
         comment="User ID that the activity belongs",
     )
-    name: Mapped[str | None] = mapped_column(
-        String(250),
+    name: Mapped[Annotated[str | None, TextSearch]] = mapped_column(
         nullable=True,
         comment="Activity name (May include spaces)",
     )
-    description: Mapped[str | None] = mapped_column(
-        String(2500),
+    description: Mapped[Annotated[str | None, Text]] = mapped_column(
         nullable=True,
         comment="Activity description (May include spaces)",
     )
-    private_notes: Mapped[str | None] = mapped_column(
-        String(2500),
+    private_notes: Mapped[Annotated[str | None, Text]] = mapped_column(
         nullable=True,
         comment="Activity private notes (May include spaces)",
     )
-    distance: Mapped[int] = mapped_column(
+    distance: Mapped[Annotated[int, IntegerOrd]] = mapped_column(
         nullable=False,
         comment="Distance in meters",
     )
-    activity_type: Mapped[int] = mapped_column(
+    activity_type: Mapped[Annotated[int, Ignore]] = mapped_column(
         nullable=False,
         comment=("Gear type (1 - mountain bike, 2 - gravel bike, ...)"),
     )
-    start_time: Mapped[datetime] = mapped_column(
+    start_time: Mapped[Annotated[datetime, Ignore]] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         comment="Activity start date (DATETIME)",
     )
-    end_time: Mapped[datetime] = mapped_column(
+    end_time: Mapped[Annotated[datetime, Ignore]] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         comment="Activity end date (DATETIME)",
     )
-    timezone: Mapped[str | None] = mapped_column(
+    timezone: Mapped[Annotated[str | None, Ignore]] = mapped_column(
         String(250),
         nullable=True,
         comment="Activity timezone (May include spaces)",
     )
-    total_elapsed_time: Mapped[Decimal] = mapped_column(
-        DECIMAL(precision=20, scale=10),
+    total_elapsed_time: Mapped[Annotated[Decimal, Numeric]] = mapped_column(
         nullable=False,
         comment="Activity total elapsed time (s)",
     )
-    total_timer_time: Mapped[Decimal] = mapped_column(
-        DECIMAL(precision=20, scale=10),
+    total_timer_time: Mapped[Annotated[Decimal, NumericOrd]] = mapped_column(
         nullable=False,
         comment="Activity total timer time (s)",
     )
-    city: Mapped[str | None] = mapped_column(
-        String(250),
+    city: Mapped[Annotated[str | None, TextSearch]] = mapped_column(
         nullable=True,
         comment="Activity city (May include spaces)",
     )
-    town: Mapped[str | None] = mapped_column(
-        String(250),
+    town: Mapped[Annotated[str | None, TextSearch]] = mapped_column(
         nullable=True,
         comment="Activity town (May include spaces)",
     )
-    country: Mapped[str | None] = mapped_column(
-        String(250),
+    country: Mapped[Annotated[str | None, TextSearch]] = mapped_column(
         nullable=True,
         comment="Activity country (May include spaces)",
     )
-    created_at: Mapped[datetime] = mapped_column(
+    created_at: Mapped[Annotated[datetime, Ignore]] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         comment="Activity creation date (DATETIME)",
     )
-    version: Mapped[int] = mapped_column(
+    version: Mapped[Annotated[int, Ignore]] = mapped_column(
         nullable=False,
         server_default="1",
         default=1,
@@ -189,193 +200,203 @@ class Activity(Base):
     # in the background (thumbnail key, resolved location, retry deferrals) use
     # Core UPDATEs that leave it alone, so they never fail a user's If-Match.
     __mapper_args__ = {"version_id_col": version}  # noqa: RUF012
-    elevation_gain: Mapped[int | None] = mapped_column(
+    elevation_gain: Mapped[Annotated[int | None, IntegerOrd]] = mapped_column(
         nullable=True,
         comment="Elevation gain in meters",
     )
-    elevation_loss: Mapped[int | None] = mapped_column(
+    elevation_loss: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment="Elevation loss in meters",
     )
-    pace: Mapped[Decimal | None] = mapped_column(
-        DECIMAL(precision=20, scale=10),
+    pace: Mapped[Annotated[Decimal | None, NumericOrd]] = mapped_column(
         nullable=True,
         comment="Pace seconds per meter (s/m)",
     )
-    average_speed: Mapped[Decimal | None] = mapped_column(
-        DECIMAL(precision=20, scale=10),
+    average_speed: Mapped[Annotated[Decimal | None, Numeric]] = mapped_column(
         nullable=True,
         comment="Average speed seconds per meter (s/m)",
     )
-    max_speed: Mapped[Decimal | None] = mapped_column(
-        DECIMAL(precision=20, scale=10),
+    max_speed: Mapped[Annotated[Decimal | None, Numeric]] = mapped_column(
         nullable=True,
         comment="Max speed seconds per meter (s/m)",
     )
-    average_power: Mapped[int | None] = mapped_column(
+    average_power: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment="Average power (watts)",
     )
-    max_power: Mapped[int | None] = mapped_column(
+    max_power: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment="Max power (watts)",
     )
-    normalized_power: Mapped[int | None] = mapped_column(
+    normalized_power: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment="Normalized power (watts)",
     )
-    average_hr: Mapped[int | None] = mapped_column(
+    average_hr: Mapped[Annotated[int | None, IntegerOrd]] = mapped_column(
         nullable=True,
         comment="Average heart rate (bpm)",
     )
-    max_hr: Mapped[int | None] = mapped_column(
+    max_hr: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment="Max heart rate (bpm)",
     )
-    average_cad: Mapped[int | None] = mapped_column(
+    average_cad: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment="Average cadence (rpm)",
     )
-    max_cad: Mapped[int | None] = mapped_column(
+    max_cad: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment="Max cadence (rpm)",
     )
-    workout_feeling: Mapped[int | None] = mapped_column(
+    workout_feeling: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment="Workout feeling (0 to 100)",
     )
-    workout_rpe: Mapped[int | None] = mapped_column(
+    workout_rpe: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment="Workout RPE (10 to 100)",
     )
-    calories: Mapped[int | None] = mapped_column(
+    calories: Mapped[Annotated[int | None, IntegerOrd]] = mapped_column(
         nullable=True,
         comment=("The number of kilocalories consumed during this activity"),
     )
-    visibility: Mapped[int] = mapped_column(
+    visibility: Mapped[Annotated[int, Ignore]] = mapped_column(
         nullable=False,
         default=0,
         comment="0 - public, 1 - followers, 2 - private",
     )
-    gear_id: Mapped[int | None] = mapped_column(
+    gear_id: Mapped[Annotated[int | None, Ignore]] = mapped_column(
         ForeignKey("gear.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
         comment="Gear ID associated with this activity",
     )
-    strava_gear_id: Mapped[str | None] = mapped_column(
+    strava_gear_id: Mapped[Annotated[str | None, Ignore]] = mapped_column(
         String(45),
         nullable=True,
         comment="Strava gear ID",
     )
-    strava_activity_id: Mapped[int | None] = mapped_column(
+    strava_activity_id: Mapped[Annotated[int | None, Ignore]] = mapped_column(
         BigInteger,
         unique=True,
         nullable=True,
         comment="Strava activity ID",
     )
-    garminconnect_activity_id: Mapped[int | None] = mapped_column(
+    garminconnect_activity_id: Mapped[Annotated[int | None, Ignore]] = mapped_column(
         BigInteger,
         nullable=True,
         comment="Garmin Connect activity ID",
     )
-    garminconnect_gear_id: Mapped[str | None] = mapped_column(
+    garminconnect_gear_id: Mapped[Annotated[str | None, Ignore]] = mapped_column(
         String(45),
         nullable=True,
         comment="Garmin Connect gear ID",
     )
-    import_info: Mapped[dict | None] = mapped_column(
+    import_info: Mapped[Annotated[dict | None, Ignore]] = mapped_column(
         JSON,
         default=None,
         nullable=True,
         doc="Additional import information",
     )
-    is_hidden: Mapped[bool] = mapped_column(
+    is_hidden: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         default=False,
         comment=("Indicates if the activity is hidden (e.g., duplicate activity waiting to be reviewed by the user)"),
     )
-    hide_start_time: Mapped[bool] = mapped_column(
+    hide_start_time: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity start time",
     )
-    hide_location: Mapped[bool] = mapped_column(
+    hide_location: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         default=False,
         comment="Hide activity location",
     )
-    hide_map: Mapped[bool] = mapped_column(
+    hide_map: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity map",
     )
-    hide_hr: Mapped[bool] = mapped_column(
+    hide_hr: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         default=False,
         comment="Hide activity heart rate",
     )
-    hide_power: Mapped[bool] = mapped_column(
+    hide_power: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity power",
     )
-    hide_cadence: Mapped[bool] = mapped_column(
+    hide_cadence: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity cadence",
     )
-    hide_elevation: Mapped[bool] = mapped_column(
+    hide_elevation: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity elevation",
     )
-    hide_speed: Mapped[bool] = mapped_column(
+    hide_speed: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity speed",
     )
-    hide_pace: Mapped[bool] = mapped_column(
+    hide_pace: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity pace",
     )
-    hide_laps: Mapped[bool] = mapped_column(
+    hide_laps: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity laps",
     )
-    hide_workout_sets_steps: Mapped[bool] = mapped_column(
+    hide_workout_sets_steps: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity workout sets and steps",
     )
-    hide_gear: Mapped[bool] = mapped_column(
+    hide_gear: Mapped[Annotated[bool, Ignore]] = mapped_column(
         nullable=False,
         comment="Hide activity gear",
     )
-    tracker_manufacturer: Mapped[str | None] = mapped_column(
+    tracker_manufacturer: Mapped[Annotated[str | None, Ignore]] = mapped_column(
         String(250),
         nullable=True,
         comment=("Tracker manufacturer (e.g., Garmin, Suunto, Polar)"),
     )
-    tracker_model: Mapped[str | None] = mapped_column(
+    tracker_model: Mapped[Annotated[str | None, Ignore]] = mapped_column(
         String(250),
         nullable=True,
         comment=("Tracker model (e.g., Forerunner 245, Ambit3 Peak, Vantage V2)"),
     )
-    map_thumbnail_path: Mapped[str | None] = mapped_column(
+    map_thumbnail_path: Mapped[Annotated[str | None, Ignore]] = mapped_column(
         String(500),
         nullable=True,
         comment=("Relative path to the pre-generated static map thumbnail image"),
     )
-    total_cycles: Mapped[int | None] = mapped_column(
+    total_cycles: Mapped[Annotated[int | None, Integer]] = mapped_column(
         nullable=True,
         comment=("Total number of cycles (e.g., pedal strokes) recorded"),
     )
-    dedup_key: Mapped[str | None] = mapped_column(
+    dedup_key: Mapped[Annotated[str | None, Ignore]] = mapped_column(
         String(255),
         nullable=True,
         comment=("Stable idempotency key (provider id or content hash) to no-op re-imports"),
     )
-    location_next_lookup_at: Mapped[datetime | None] = mapped_column(
+    location_next_lookup_at: Mapped[Annotated[datetime | None, Ignore]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
         comment="Earliest time the location backfill retries an activity with no resolved location",
     )
-    thumbnail_next_attempt_at: Mapped[datetime | None] = mapped_column(
+    thumbnail_next_attempt_at: Mapped[Annotated[datetime | None, Ignore]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
         comment="Earliest time the thumbnail backfill retries an activity that has no thumbnail",
     )
+
+    @validates("total_elapsed_time", "total_timer_time", "pace", "average_speed", "max_speed")
+    def _store_as_decimal(self, _key: str, value: Decimal | float | None) -> Decimal | None:
+        """Convert a number to the ``Decimal`` that its encrypted field takes.
+
+        The API schemas and the importers give these fields as ``float``. The
+        plaintext ``NUMERIC(20, 10)`` column converted them, but the encrypted
+        field takes only ``Decimal``. So the value is rounded to 10 decimal
+        places here, as the column did.
+        """
+        if value is None or isinstance(value, Decimal):
+            return value
+        return Decimal(str(value)).quantize(_TEN_PLACES)

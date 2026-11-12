@@ -94,7 +94,11 @@ _INTRA_MODULE_SEAMS: dict[tuple[str, str], str] = {}
 
 #: Reaches past a module's surface from outside it, as
 #: ``(importer module path, imported glob): reason``.
-_INBOUND_EXCEPTIONS: dict[tuple[str, str], str] = {}
+_INBOUND_EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("encrypted_models", "activity.models"): (
+        "configure_encryption takes the ORM class itself, at startup. No module operation can stand in for the class."
+    ),
+}
 
 #: The callables that build a ``ProfileActivityContributor``: the dataclass itself,
 #: and the shared factory the plain child collections go through. Both take the

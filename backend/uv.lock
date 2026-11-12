@@ -862,6 +862,7 @@ dependencies = [
     { name = "safeuploads", extra = ["fastapi"] },
     { name = "slowapi" },
     { name = "sqlalchemy" },
+    { name = "stackencrypt" },
     { name = "staticmap" },
     { name = "stravalib" },
     { name = "tcxreader" },
@@ -962,6 +963,7 @@ requires-dist = [
     { name = "safeuploads", extras = ["fastapi"], specifier = ">=1.1.1" },
     { name = "slowapi", specifier = ">=0.1.10" },
     { name = "sqlalchemy", specifier = ">=2.0.54" },
+    { name = "stackencrypt", directory = "../../stack/languages/python" },
     { name = "staticmap", specifier = ">=0.5.7" },
     { name = "stravalib", specifier = ">=2.6.0" },
     { name = "tcxreader", specifier = ">=0.4.11" },
@@ -2903,6 +2905,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/43/e1/f3d25c2ca66ed394b0fc9786af9857c448bc9ac68e59c3d2283245e9dc40/sqlalchemy-2.1.1-cp315-cp315t-win_arm64.whl", hash = "sha256:b76d8fddf080c53f2afdea6e7149721e7b980086a2f17a9b0bdb42571a92c285", size = 2412985, upload-time = "2026-09-25T15:20:59.747Z" },
     { url = "https://files.pythonhosted.org/packages/c5/7a/7d1879d78c086737acee5f3250cbff9d285e5bd7cb6bc2c730f24e8d400e/sqlalchemy-2.1.1-py3-none-any.whl", hash = "sha256:4357c1a222e141662251a59d3702f9b124294941171dfa6bd570513e9f4905ee", size = 2047471, upload-time = "2026-09-25T15:20:37.797Z" },
 ]
+
+[[package]]
+name = "stackencrypt"
+source = { directory = "../../stack/languages/python" }
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", marker = "extra == 'test'", specifier = ">=1.13" },
+    { name = "attrs", marker = "extra == 'test'", specifier = ">=23" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'test'", specifier = ">=3.1" },
+    { name = "pydantic", marker = "extra == 'test'", specifier = ">=2" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
+    { name = "sqlalchemy", marker = "extra == 'test'", specifier = ">=2" },
+]
+provides-extras = ["test"]
 
 [[package]]
 name = "starlette"

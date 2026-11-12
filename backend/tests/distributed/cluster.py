@@ -36,6 +36,8 @@ class ClusterConfig:
     redis_url: str
     s3_endpoint_url: str
     s3_bucket: str
+    #: The EQL v4 SQL bundle. Migration 29 needs EQL in the new database.
+    eql_bundle: Path
 
 
 @dataclass
@@ -74,7 +76,20 @@ class Cluster:
             connection.execute(text(f'DROP DATABASE IF EXISTS "{self._db_name}" WITH (FORCE)'))
             connection.execute(text(f'CREATE DATABASE "{self._db_name}"'))
         self.engine: Engine = create_engine(url.set(database=self._db_name))
+        self._install_eql()
         self._reset_shared_services()
+
+    def _install_eql(self) -> None:
+        """Install EQL v4 in the new database, which is a copy of template1 and has none."""
+        # The raw psycopg connection, with no parameters: SQLAlchemy would pass
+        # an empty parameter set, and psycopg would then read the bundle's '%'
+        # characters as placeholders.
+        raw = self.engine.raw_connection()
+        try:
+            raw.driver_connection.execute(self._config.eql_bundle.read_text())
+            raw.commit()
+        finally:
+            raw.close()
 
     # -- environment ---------------------------------------------------------
 

@@ -15,7 +15,7 @@ So these exercise the actual schema objects and a real session.
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from tests._helpers.db import create_sqlite_session
+from tests._helpers.db import ensure_user
 
 import modules.activities.activity.contracts as activity_contracts
 import modules.activities.activity.crud as activity_crud
@@ -23,11 +23,12 @@ import modules.activities.activity.schema as activity_schema
 
 
 @pytest.fixture
-def db():
-    session = create_sqlite_session()
+def db(pg_factory):
+    # PostgreSQL enforces the users.id foreign key of the activities.
+    ensure_user(pg_factory, 1)
+    session = pg_factory()
     yield session
     session.close()
-    session.bind.dispose()
 
 
 #: Privacy flags the enrichment step always sets before an activity reaches CRUD.

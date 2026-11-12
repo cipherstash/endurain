@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from urllib.parse import unquote
 
 from sqlalchemy import func, or_
+from stackencrypt import StashError
 
 import core.timezone as core_timezone
 import modules.activities.activity.models as activity_models
@@ -23,40 +24,37 @@ import modules.activities.activity.models as activity_models
 MAX_UTC_OFFSET = core_timezone.MAX_UTC_OFFSET
 
 
-def escape_like(term: str) -> str:
-    r"""Escape SQL LIKE wildcards in a user-provided term.
-
-    Escapes ``\``, ``%`` and ``_`` so they are matched literally. Use together
-    with ``.like(..., escape="\\")`` to keep user input from injecting LIKE
-    wildcards into search filters.
-
-    Args:
-        term: Raw search term.
-
-    Returns:
-        Escaped search term safe for use inside a ``LIKE`` pattern.
-    """
-    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 def name_search_condition(name_search: str):
-    """A case-insensitive LIKE search across an activity's name and location.
+    """A case-insensitive search across an activity's name and location.
+
+    The four columns are encrypted, so this is a CipherStash match search on
+    each, not ``LIKE``. A match finds the activities whose field holds every
+    3-character piece of the term, in any order, ignoring case. A word of 2
+    characters, such as ``"uk"``, must match a whole word. It goes in the
+    ``WHERE`` of a ``select`` of whole ``Activity`` objects run through a
+    session. The SDK then removes the rows that only seemed to match.
 
     Args:
         name_search: URL-encoded search term, as it arrives on the query string.
 
     Returns:
         A SQLAlchemy condition matching the term against name, town, city or
-        country, with ``%``/``_`` escaped so user input cannot inject wildcards.
+        country. ``None`` when the term has nothing a match search can use,
+        such as ``"r"``. The caller then applies no name filter. The old LIKE
+        search for one letter matched almost every row.
     """
-    raw = unquote(name_search).replace("+", " ").lower()
-    pattern = f"%{escape_like(raw)}%"
-    return or_(
-        func.lower(activity_models.Activity.name).like(pattern, escape="\\"),
-        func.lower(activity_models.Activity.town).like(pattern, escape="\\"),
-        func.lower(activity_models.Activity.city).like(pattern, escape="\\"),
-        func.lower(activity_models.Activity.country).like(pattern, escape="\\"),
-    )
+    term = unquote(name_search).replace("+", " ")
+    try:
+        return or_(
+            activity_models.Activity.name.match(term),
+            activity_models.Activity.town.match(term),
+            activity_models.Activity.city.match(term),
+            activity_models.Activity.country.match(term),
+        )
+    except StashError as error:
+        if error.code == "stack_encrypt_empty_term_text":
+            return None
+        raise
 
 
 def local_start_time_expression():

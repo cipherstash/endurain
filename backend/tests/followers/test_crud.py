@@ -297,11 +297,14 @@ class TestDeleteFollower:
 class TestAcceptIsAtomic:
     """Against a real session: the accept is one conditional UPDATE."""
 
-    def test_the_second_accept_of_a_request_finds_nothing_to_accept(self):
+    def test_the_second_accept_of_a_request_finds_nothing_to_accept(self, pg_factory):
         import modules.followers.crud as crud
-        from tests._helpers.db import create_sqlite_session
+        from tests._helpers.db import ensure_user
 
-        db = create_sqlite_session()
+        # PostgreSQL enforces the users.id foreign keys.
+        ensure_user(pg_factory, 1)
+        ensure_user(pg_factory, 2)
+        db = pg_factory()
         try:
             crud.create_follower(2, 1, db)
 

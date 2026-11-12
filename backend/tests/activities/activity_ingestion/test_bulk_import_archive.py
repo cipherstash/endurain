@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from jasil.backends.storage_local import LocalStorage
-from tests._helpers.db import create_sqlite_session_factory, ensure_user
+from tests._helpers.db import ensure_user
 
 import core.exceptions as core_exceptions
 import modules.activities.activity_ingestion.bulk_import_service as bulk
@@ -31,11 +31,9 @@ def _commit_through(*_args, **kwargs):
 
 
 @pytest.fixture
-def factory():
-    session_factory = create_sqlite_session_factory()
-    ensure_user(session_factory, _USER)
-    yield session_factory
-    session_factory.kw["bind"].dispose()
+def factory(pg_factory):
+    ensure_user(pg_factory, _USER)
+    return pg_factory
 
 
 @pytest.fixture

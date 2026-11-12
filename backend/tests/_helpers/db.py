@@ -6,8 +6,9 @@ from unittest.mock import MagicMock
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
+from stackencrypt.sqlalchemy import configure_encryption
 
+import encrypted_models
 import model_registry as orm_model_registry
 
 
@@ -75,47 +76,6 @@ def _import_all_models() -> None:
     orm_model_registry.import_all_models()
 
 
-def create_sqlite_session() -> Session:
-    """Create a real in-memory SQLite session with all tables created.
-
-    Use only for the rare CRUD test that must exercise SQL ``WHERE`` filtering
-    behavior, which a mocked ``Session`` cannot evaluate (e.g. access-control
-    filters). Prefer the mock-DB helpers for ordinary unit tests. The caller is
-    responsible for closing the returned session.
-    """
-    from core.database import Base
-
-    _import_all_models()
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    return Session(engine)
-
-
-def create_sqlite_session_factory() -> sessionmaker[Session]:
-    """Create a sessionmaker over one shared in-memory SQLite engine.
-
-    Unlike ``create_sqlite_session``, sessions produced by this factory share a
-    single engine/connection (``StaticPool``), so many short-lived sessions see
-    the same data. Use it to test code that opens a fresh session per operation
-    (e.g. the durable job runner). Dispose the engine in teardown via
-    ``factory.kw["bind"].dispose()`` to avoid a ``ResourceWarning``.
-    """
-    from core.database import Base
-
-    _import_all_models()
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)
-
-
 #: Environment variable naming a *disposable* PostgreSQL database for the tests
 #: marked ``postgres``. Unset, those tests are skipped.
 POSTGRES_TEST_URL_ENV = "TEST_DATABASE_URL"
@@ -129,7 +89,7 @@ def postgres_test_url() -> str | None:
 def create_postgres_session_factory() -> sessionmaker[Session]:
     """Create a sessionmaker over a real PostgreSQL test database.
 
-    Unlike the SQLite helpers, sessions here get their own pooled connection, so
+    Sessions here get their own pooled connection, so
     one session's uncommitted work is invisible to another and a failed flush
     leaves the session unusable until it is rolled back, exactly as in
     production. The schema is dropped and recreated, so the database named by
@@ -153,6 +113,10 @@ def create_postgres_session_factory() -> sessionmaker[Session]:
         )
 
     _import_all_models()
+    # The users and activities have CipherStash EQL columns, as in the app:
+    # the database must have EQL v4 installed, and the tests need CipherStash
+    # credentials. A repeat call does nothing.
+    configure_encryption(encrypted_models.classes())
     engine = create_engine(url)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)

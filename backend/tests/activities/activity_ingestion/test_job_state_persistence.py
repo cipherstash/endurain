@@ -4,7 +4,7 @@ The CRUD only stages a transition, and every job opens its own short-lived
 session. Closing a session without committing discards the change, which no
 mock-based test can see: the failure is a job row that silently stays
 ``pending`` or ``processing`` forever. These run the real job functions against
-a real (SQLite) database and read the row back from a *fresh* session.
+a real PostgreSQL database and read the row back from a *fresh* session.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -12,14 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from tests._helpers.db import (
-    POSTGRES_TEST_URL_ENV,
-    create_postgres_session_factory,
-    create_sqlite_session_factory,
-    drop_postgres_schema,
-    ensure_user,
-    postgres_test_url,
-)
+from tests._helpers.db import ensure_user
 
 import modules.activities.activity_ingestion.constants as activity_ingestion_constants
 import modules.activities.activity_ingestion.models as ingestion_models
@@ -30,29 +23,15 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def factory(request):
-    """The same assertions against SQLite and, when configured, PostgreSQL.
+@pytest.fixture
+def factory(pg_factory):
+    """A PostgreSQL session factory.
 
-    SQLite shares one connection across sessions, so it can only show that a
-    change was committed. PostgreSQL gives each session its own connection and
-    transaction, which is what the production job runner has.
+    PostgreSQL gives each session its own connection and transaction, which is
+    what the production job runner has. These tests no longer run on SQLite:
+    the users table has CipherStash EQL columns, which SQLite cannot create.
     """
-    if request.param == "sqlite":
-        session_factory = create_sqlite_session_factory()
-        try:
-            yield session_factory
-        finally:
-            session_factory.kw["bind"].dispose()
-        return
-
-    if postgres_test_url() is None:
-        pytest.skip(f"{POSTGRES_TEST_URL_ENV} is not set")
-    session_factory = create_postgres_session_factory()
-    try:
-        yield session_factory
-    finally:
-        drop_postgres_schema(session_factory)
+    return pg_factory
 
 
 def _add_job(factory, **overrides) -> None:
