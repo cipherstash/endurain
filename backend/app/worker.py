@@ -25,11 +25,11 @@ from stackencrypt.sqlalchemy import configure_encryption
 import core.config as core_config
 import core.logger as core_logger
 import core.platform_settings as core_platform_settings
+import encrypted_models
 import model_registry as orm_model_registry
 import module_registry as runtime_module_registry
 import modules.garmin.provider_registry as garmin_provider_registry
 import modules.strava.provider_registry as strava_provider_registry
-import modules.users.users.models as users_models
 
 logger = core_logger.get_logger(__name__)
 
@@ -66,9 +66,9 @@ def run_worker_process(stop: threading.Event | None = None) -> None:
     # directly - and a string-target relationship on one that it does touch
     # (Users -> PasswordResetToken) fails to resolve on the first claim.
     orm_model_registry.import_all_models()
-    # Encrypt and decrypt the users' identity columns with CipherStash, as the
-    # API process does. A repeat call in the same process does nothing.
-    configure_encryption([users_models.Users])
+    # Encrypt and decrypt the CipherStash columns of the users and activities,
+    # as the API process does. A repeat call in the same process does nothing.
+    configure_encryption(encrypted_models.classes())
     # This process is a dedicated consumer whatever the API's flag says, so the
     # substrate must see the standalone topology it is part of.
     worker_settings = core_config.settings.model_copy(update={"JOBS_RUN_IN_PROCESS_WORKER": False})

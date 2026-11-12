@@ -1,6 +1,10 @@
 # Run Endurain with CipherStash encryption
 
-Endurain encrypts four columns of the `users` table: `name`, `username`, `email`, and `city`.
+Endurain encrypts these columns:
+
+- `users`: `name`, `username`, `email`, and `city`;
+- `activities`: `name`, `description`, `private_notes`, `city`, `town`, and `country`.
+
 The encryption uses the CipherStash Python SDK, `stackencrypt`.
 
 The database needs EQL v4 before Endurain starts.
@@ -63,6 +67,7 @@ Set `TEST_EQL_BUNDLE` to the path of the bundle from step 1.
 ## 4. Start Endurain
 
 Start Endurain as usual. Migration 29 encrypts the existing users rows.
+Migration 30 encrypts the existing activities rows.
 
 ## Upgrade EQL
 
@@ -70,12 +75,15 @@ Do not just run step 2 again on a database that Endurain already uses.
 
 The bundle starts with `DROP SCHEMA eql_v4 CASCADE`.
 That drop also removes every index that uses an `eql_v4` function.
-In Endurain, these are the four indexes on `users` that migration 29 creates:
+In Endurain, these are 16 indexes:
 
-- `ix_users_email`, to refuse a duplicate email;
-- `ix_users_username`, to refuse a duplicate username;
-- `ix_users_username_ope`, for sorting by username;
-- `ix_users_username_match`, for username search.
+- on `users`, the four indexes that migration 29 creates:
+  - `ix_users_email`, to refuse a duplicate email;
+  - `ix_users_username`, to refuse a duplicate username;
+  - `ix_users_username_ope`, for sorting by username;
+  - `ix_users_username_match`, for username search;
+- on `activities`, the 12 indexes that migration 30 creates.
+  `name`, `city`, `town`, and `country` each have an `_eq`, an `_ope`, and a `_match` index.
 
 PostgreSQL gives no error. The encrypted values stay, because their column types are in `public`.
 But duplicate emails and usernames are no longer refused, and searches read every row.
@@ -86,17 +94,17 @@ Run this from the root of the `stack` checkout, after you build the new bundle:
 ```sh
 DB="postgresql://endurain:PASSWORD@localhost:5432/endurain"
 
-# 1. Save each users index that uses an eql_v4 function.
+# 1. Save each users and activities index that uses an eql_v4 function.
 psql "$DB" -At -c "SELECT pg_get_indexdef(indexrelid) || ';' FROM pg_index
-  WHERE indrelid = 'public.users'::regclass
-  AND pg_get_indexdef(indexrelid) LIKE '%eql_v4.%'" > users-eql-indexes.sql
+  WHERE indrelid IN ('public.users'::regclass, 'public.activities'::regclass)
+  AND pg_get_indexdef(indexrelid) LIKE '%eql_v4.%'" > eql-indexes.sql
 
-# 2. Check that the file has the four indexes.
-cat users-eql-indexes.sql
+# 2. Check that the file has the 16 indexes.
+wc -l eql-indexes.sql
 
 # 3. Reinstall EQL and create the indexes again, in one transaction.
 psql "$DB" -v ON_ERROR_STOP=1 --single-transaction \
-  -f packages/eql/release/cipherstash-encrypt-v4.sql -f users-eql-indexes.sql
+  -f packages/eql/release/cipherstash-encrypt-v4.sql -f eql-indexes.sql
 ```
 
 If any statement fails, the transaction rolls back, and the old EQL and the indexes stay.

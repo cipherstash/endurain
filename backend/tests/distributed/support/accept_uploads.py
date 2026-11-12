@@ -38,6 +38,7 @@ module_registry.register_durable_handlers(jobs_registry.registry)
 
 from stackencrypt.sqlalchemy import configure_encryption
 
+import encrypted_models
 import modules.activities.activity_ingestion.service as ingestion_service
 import modules.users.users.models as users_models
 import modules.users.users_default_gear.crud as default_gear_crud
@@ -46,7 +47,7 @@ import modules.users.users_privacy_settings.crud as privacy_crud
 from core.database import SessionLocal
 
 # As main.py does: the users columns are encrypted.
-configure_encryption([users_models.Users])
+configure_encryption(encrypted_models.classes())
 
 count, tag = int(sys.argv[1]), sys.argv[2]
 

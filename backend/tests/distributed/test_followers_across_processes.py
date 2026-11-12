@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from stackencrypt.sqlalchemy import configure_encryption
 
+import encrypted_models
 import model_registry
 import modules.users.users.models as users_models
 from tests.distributed.cluster import _APP_DIR, _SUPPORT_DIR
@@ -39,7 +40,7 @@ def _notifications_by_username(cluster) -> dict[str, int]:
     configure_encryption call does nothing.
     """
     model_registry.import_all_models()
-    configure_encryption([users_models.Users])
+    configure_encryption(encrypted_models.classes())
     counts = dict(cluster.query("SELECT user_id, count(*) FROM notifications GROUP BY 1"))
     with Session(cluster.engine) as session:
         users = session.scalars(select(users_models.Users).where(users_models.Users.id.in_(counts))).all()

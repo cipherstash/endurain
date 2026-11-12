@@ -16,6 +16,11 @@ Terms used here:
 | 3 | The SDK | An app cannot build a query term without credentials. |
 | 4 | Endurain | The monthly summary fails on PostgreSQL with `GroupingError`. |
 | 5 | Endurain | Alembic autogenerate finds differences that stock Endurain already has. |
+| 6 | The SDK | `configure_encryption` failed on a table with any unique constraint. Fixed locally, not committed. |
+| 7 | The SDK and Endurain | A 1-character match search raises an error, and a 2-character one matches only a whole word. |
+| 8 | Endurain | A search on encrypted columns loads every matching row to count and page them. |
+| 9 | The SDK | `TextSearch` adds an equality index that Endurain never uses. |
+| 10 | Endurain | `activities.timezone` stays plaintext. |
 
 ## 1. A plain ORDER BY on an encrypted column returns a wrong order
 
@@ -109,7 +114,9 @@ Migration 29 creates four such indexes on `users`:
 - `ix_users_username_ope`, on `eql_v4.ord_term(username)`;
 - `ix_users_username_match`, a GIN index on `eql_v4.match_term(username)`.
 
-After a second install, duplicate emails and usernames are no longer refused. Username searches read every row.
+Migration 30 creates 12 more on `activities`: an equality, an order, and a match index for each of `name`, `city`, `town`, and `country`.
+
+After a second install, duplicate emails and usernames are no longer refused. Searches read every row.
 
 ### Evidence
 
@@ -209,3 +216,75 @@ I have not compared the comment texts in the model and in the database.
 1. Make `import_all_models()` load `migrations.models`.
 2. Add a migration that changes `activity_sets.start_time` to `timestamp with time zone`, with the values read as UTC, as v0_18_0 does for the other columns.
 3. Compare the `activity_ingestion_jobs` comments, and make the model and a migration agree.
+
+## 6. configure_encryption failed on a table with any unique constraint
+
+### What happens
+
+`configure_encryption` checks that no encrypted column has a unique constraint. For each `UniqueConstraint` on the table, it ran `column in constraint.columns`. SQLAlchemy's column collection accepts only a string key there. For a `Column`, it raises `ArgumentError: __contains__ requires a string argument`.
+
+So any table with an encrypted column and any unique constraint failed, even when the constraint is on a plaintext column. `activities` has one: `strava_activity_id` is `unique=True`.
+
+### Why nothing caught it
+
+The SDK's test put `unique=True` on the encrypted column itself. Then `column.unique` is true, and Python never evaluates the constraint check.
+
+### Current state
+
+Fixed in the `cipherstash/stack` working tree, not committed. `stackencrypt/sqlalchemy.py` now uses `constraint.columns.contains_column(column)`. Two new tests in `tests/test_sqlalchemy.py` cover a plaintext unique column, and an encrypted column inside a two-column unique constraint. Endurain's `.venv` has the fixed SDK. Endurain cannot start without the fix.
+
+## 7. Short match search terms
+
+### What happens
+
+A match search splits text into 3-character pieces. The SDK treats shorter terms in two ways:
+
+- A 1-character term, such as `"r"`, raises `StashError` with the code `stack_encrypt_empty_term_text`.
+- A 2-character term, such as `"ru"`, matches only a whole 2-character word. `"uk"` finds the country "UK", but `"ru"` does not find "Run".
+
+The old `LIKE` search accepted any length, and matched any substring.
+
+The SDK README documents neither rule.
+
+### Effect on Endurain
+
+- The activity search handles it. For a 1-character term, it applies no name filter. Tests cover both rules.
+- The username search from step 1 does not. A 1-character username search raises the error when it builds the filter. Its `handle_db_errors` decorator handles only SQLAlchemy errors, so the error reaches the API. I expect a server error, but I have not called the endpoint. This is not fixed yet.
+
+### Proposal
+
+1. Document both rules, and the error code, in the SDK README.
+2. Decide what the username search does with a 1-character term.
+
+## 8. A search on encrypted columns loads every matching row
+
+### What happens
+
+The SDK removes rows that only seemed to match after the query runs. So the database cannot count the matches, and cannot cut a page with `OFFSET` and `LIMIT`. The SDK refuses `func.count()` with a match.
+
+So when a search term is given, `count_user_activities` and `get_user_activities_with_pagination` load and decrypt every matching activity of the user. They count or cut the page in Python. Without a search term, both still run in SQL.
+
+### Effect on Endurain
+
+The results are correct. A search that matches many activities is slower than before. This has not been measured.
+
+## 9. TextSearch adds an equality index that Endurain never uses
+
+### What happens
+
+`TextSearch` supports equality, order, and match. The SDK adds one index for each, to the model's table. Endurain searches `activities.name`, `city`, `town`, and `country` by match, and sorts them. It never searches them by equality.
+
+No marker has match and order without equality. So each activity write updates 4 equality indexes for no use.
+
+### Proposal
+
+Add a marker, or a marker option, for match and order without equality.
+
+## 10. activities.timezone stays plaintext
+
+### What happens
+
+The summaries pass `timezone` to PostgreSQL's `timezone()` function (`backend/app/modules/activities/activity/query.py`). The database cannot do that with an encrypted value. So the column stays plaintext.
+
+A time zone shows roughly where a person lives. The city, town, and country are encrypted, but the time zone is not.
+

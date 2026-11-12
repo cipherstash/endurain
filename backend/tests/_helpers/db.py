@@ -8,6 +8,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 from stackencrypt.sqlalchemy import configure_encryption
 
+import encrypted_models
 import model_registry as orm_model_registry
 
 
@@ -111,13 +112,11 @@ def create_postgres_session_factory() -> sessionmaker[Session]:
             "disposable database whose name contains 'test'."
         )
 
-    import modules.users.users.models as users_models
-
     _import_all_models()
-    # The users' identity columns are CipherStash EQL columns, as in the app:
+    # The users and activities have CipherStash EQL columns, as in the app:
     # the database must have EQL v4 installed, and the tests need CipherStash
     # credentials. A repeat call does nothing.
-    configure_encryption([users_models.Users])
+    configure_encryption(encrypted_models.classes())
     engine = create_engine(url)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)

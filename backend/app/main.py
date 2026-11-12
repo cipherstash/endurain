@@ -40,6 +40,7 @@ import core.problem_details as core_problem_details
 import core.rate_limit as core_rate_limit
 import core.scheduler as core_scheduler
 import core.signing as core_signing
+import encrypted_models
 import module_registry as runtime_module_registry
 import modules.activities.activity_ingestion.integration_service as activity_ingestion_integration
 import modules.auth.identity_providers.link_tokens.utils as idp_link_token_utils
@@ -55,7 +56,6 @@ import modules.server_settings.schema as server_settings_schema
 import modules.server_settings.utils as server_settings_utils
 import modules.strava.provider_registry as strava_provider_registry
 import modules.strava.scheduled_jobs as strava_scheduled_jobs
-import modules.users.users.models as users_models
 from api import router as api_router
 from core.database import SessionLocal
 from core.database import engine as core_db_engine
@@ -217,10 +217,10 @@ async def startup_event(fastapi_app: FastAPI) -> None:
 
     # Phase 1: critical pre-flight tasks.
     _run_alembic_migrations()
-    # Encrypt and decrypt the users' identity columns with CipherStash, through
-    # every engine, from here on. The migration that made them encrypted
-    # encrypts its rows itself.
-    configure_encryption([users_models.Users])
+    # Encrypt and decrypt the CipherStash columns of the users and activities,
+    # through every engine, from here on. The migrations that made them
+    # encrypted encrypt their rows themselves.
+    configure_encryption(encrypted_models.classes())
     core_migrations.bootstrap_substrate_schema()
     await core_migrations.check_migrations()
     # The composition root collects each module's own declaration; the scheduler

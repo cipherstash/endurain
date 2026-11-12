@@ -51,7 +51,7 @@ class TestRunWorkerProcess:
             call.register_durable_handlers(jobs_registry.registry),
         ]
         install_signals.assert_called_once_with(stop)
-        configure_encryption.assert_called_once_with([worker.users_models.Users])
+        configure_encryption.assert_called_once_with(worker.encrypted_models.classes())
         service.run_job_worker.assert_called_once_with(role="worker", stop=stop)
         # Whatever the API's flag says, this process must present the standalone
         # topology, or ``run_job_worker`` refuses to start.

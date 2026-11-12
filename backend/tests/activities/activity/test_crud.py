@@ -46,7 +46,6 @@ class TestGetUserActivities:
             activity_type=1,
             start_date=date(2024, 1, 1),
             end_date=date(2024, 1, 31),
-            name_search="Test",
             user_is_owner=True,
         )
         assert r is not None
@@ -1114,9 +1113,7 @@ class TestGetViewableActivityByIdForUser:
         pg_session.commit()
 
         # The accepted follow is resolved by the caller now, not mid-SELECT.
-        result = crud.get_viewable_activity_by_id_for_user(
-            activity_id=1, user_id=1, db=pg_session, followee_ids=[2]
-        )
+        result = crud.get_viewable_activity_by_id_for_user(activity_id=1, user_id=1, db=pg_session, followee_ids=[2])
 
         assert result is not None
         assert mock_ser.call_args.args[0].id == 1
@@ -1577,3 +1574,156 @@ class TestSumGearUsageByWindow:
         assert result[1].time == 60.0
         # A window that matched nothing still reports zeroes rather than going missing.
         assert result[2].distance == 0.0
+
+
+class TestEncryptedTextColumns:
+    """The activity name and location columns are CipherStash-encrypted.
+
+    These run on PostgreSQL with EQL v4 and CipherStash credentials. The search
+    is a match search, not LIKE, and the sorts use the order terms.
+    """
+
+    @staticmethod
+    def _add(pg_session, rows):
+        for index, fields in enumerate(rows, start=1):
+            minute = datetime(2024, 1, 1, 0, index, tzinfo=UTC)
+            pg_session.add(_public_activity(id=index, start_time=minute, created_at=minute, **fields))
+        pg_session.commit()
+
+    def test_the_stored_name_is_not_plaintext(self, pg_session):
+        from sqlalchemy import text
+
+        self._add(pg_session, [{"name": "Morning Run"}])
+
+        stored = pg_session.execute(text("SELECT name::jsonb::text FROM activities")).scalar_one()
+        assert "Morning Run" not in stored
+
+    def test_the_search_finds_the_name_and_the_location_ignoring_case(self, pg_session):
+        import modules.activities.activity.crud as crud
+
+        self._add(
+            pg_session,
+            [
+                {"name": "Morning Run"},
+                {"name": "Ride", "city": "Lisbon"},
+                {"name": "Swim", "town": "Sintra"},
+                {"name": "Walk", "country": "Portugal"},
+                {"name": "Evening Ride", "city": "Porto"},
+            ],
+        )
+
+        def names(term):
+            found = crud.get_user_activities(user_id=1, db=pg_session, name_search=term, user_is_owner=True)
+            return sorted(activity.name for activity in found)
+
+        assert names("MORNING") == ["Morning Run"]
+        assert names("lisbon") == ["Ride"]
+        assert names("sintra") == ["Swim"]
+        assert names("portugal") == ["Walk"]
+        assert names("ride") == ["Evening Ride", "Ride"]
+        assert names("marathon") == []
+
+    def test_a_short_term_matches_a_whole_word_and_one_letter_applies_no_filter(self, pg_session):
+        import modules.activities.activity.crud as crud
+
+        self._add(pg_session, [{"name": "Run"}, {"name": "Swim", "country": "UK"}])
+
+        def names(term):
+            found = crud.get_user_activities(user_id=1, db=pg_session, name_search=term, user_is_owner=True)
+            return sorted(activity.name for activity in found)
+
+        # A 2-character term is a whole word: "uk" finds the country UK, and
+        # "ru" does not find "Run".
+        assert names("uk") == ["Swim"]
+        assert names("ru") == []
+        # A 1-character term cannot be a match search, so no name filter.
+        assert names("r") == ["Run", "Swim"]
+        assert crud.count_user_activities(user_id=1, db=pg_session, name_search="r", user_is_owner=True) == 2
+
+    def test_the_count_and_the_pages_of_a_search_agree(self, pg_session):
+        import modules.activities.activity.crud as crud
+
+        self._add(
+            pg_session,
+            [
+                {"name": "Hill Run A"},
+                {"name": "Swim"},
+                {"name": "Hill Run B"},
+                {"name": "Ride"},
+                {"name": "Hill Run C"},
+            ],
+        )
+
+        count = crud.count_user_activities(user_id=1, db=pg_session, name_search="hill", user_is_owner=True)
+        pages = [
+            [
+                activity.name
+                for activity in crud.get_user_activities_with_pagination(
+                    user_id=1,
+                    db=pg_session,
+                    page_number=page,
+                    num_records=2,
+                    name_search="hill",
+                    sort_by="name",
+                    sort_order="asc",
+                    user_is_owner=True,
+                )
+            ]
+            for page in (1, 2)
+        ]
+
+        assert count == 3
+        assert pages == [["Hill Run A", "Hill Run B"], ["Hill Run C"]]
+
+    def test_the_name_sort_follows_the_plaintext(self, pg_session):
+        import modules.activities.activity.crud as crud
+
+        self._add(pg_session, [{"name": "Charlie"}, {"name": "Alpha"}, {"name": "Bravo"}])
+
+        def sorted_names(order):
+            found = crud.get_user_activities_with_pagination(
+                user_id=1, db=pg_session, sort_by="name", sort_order=order, user_is_owner=True
+            )
+            return [activity.name for activity in found]
+
+        assert sorted_names("asc") == ["Alpha", "Bravo", "Charlie"]
+        assert sorted_names("desc") == ["Charlie", "Bravo", "Alpha"]
+
+    def test_the_location_sort_puts_no_location_first_ascending_and_last_descending(self, pg_session):
+        import modules.activities.activity.crud as crud
+
+        self._add(
+            pg_session,
+            [
+                {"name": "b", "country": "Spain", "city": "Madrid"},
+                {"name": "none"},
+                {"name": "a", "country": "France", "city": "Paris"},
+                {"name": "c", "country": "Spain", "city": "Bilbao"},
+            ],
+        )
+
+        def sorted_names(order):
+            found = crud.get_user_activities_with_pagination(
+                user_id=1, db=pg_session, sort_by="location", sort_order=order, user_is_owner=True
+            )
+            return [activity.name for activity in found]
+
+        assert sorted_names("asc") == ["none", "a", "c", "b"]
+        assert sorted_names("desc") == ["b", "c", "a", "none"]
+
+    def test_the_location_is_written_once_and_read_back(self, pg_session):
+        import modules.activities.activity.crud as crud
+        import modules.activities.activity.models as am
+
+        self._add(pg_session, [{"name": "Run"}])
+
+        assert crud.update_activity_location(1, "Lisbon", None, "Portugal", pg_session) is True
+        pg_session.commit()
+        assert crud.update_activity_location(1, "Porto", None, "Portugal", pg_session) is False
+        pg_session.commit()
+
+        pg_session.expire_all()
+        activity = pg_session.get(am.Activity, 1)
+        assert (activity.city, activity.town, activity.country) == ("Lisbon", None, "Portugal")
+        missing = crud.get_activities_missing_location(pg_session, due_at=datetime(2030, 1, 1, tzinfo=UTC))
+        assert missing == []

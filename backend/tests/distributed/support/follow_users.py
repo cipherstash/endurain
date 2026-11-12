@@ -32,12 +32,13 @@ module_registry.register_durable_handlers(jobs_registry.registry)
 
 from stackencrypt.sqlalchemy import configure_encryption
 
+import encrypted_models
 import modules.followers.service as followers_service
 import modules.users.users.models as users_models
 from core.database import SessionLocal
 
 # As main.py does: the users columns are encrypted.
-configure_encryption([users_models.Users])
+configure_encryption(encrypted_models.classes())
 
 with SessionLocal() as db:
     users = []

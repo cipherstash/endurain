@@ -62,8 +62,9 @@ _NUMERIC_SORT_COLUMNS = {
     activity_models.Activity.average_hr,
 }
 
-# Text columns coalesced to "" so an unset place name orders with the empty ones
-# instead of wherever the backend happens to put NULL.
+# Text columns whose NULLs sort as the smallest value: first ascending, last
+# descending, as an empty name would. They are encrypted, so NULLS FIRST or
+# NULLS LAST does this, not COALESCE with a plaintext "".
 _TEXT_SORT_COLUMNS = {
     activity_models.Activity.country,
     activity_models.Activity.city,
@@ -88,7 +89,8 @@ def _sort_order_by(sort_by: str | None, sort_order: str | None) -> list[Any]:
         if column in _NUMERIC_SORT_COLUMNS:
             ordered = func.coalesce(column, _NULL_SORT_SENTINEL if ascending else -_NULL_SORT_SENTINEL)
         elif column in _TEXT_SORT_COLUMNS:
-            ordered = func.coalesce(column, "")
+            clauses.append(column.asc().nulls_first() if ascending else column.desc().nulls_last())
+            continue
         else:
             ordered = column
         clauses.append(ordered.asc() if ascending else ordered.desc())
@@ -199,7 +201,9 @@ def _apply_user_activity_filters(
     # user filtering "1 May" gets their 1 May, not UTC's.
     stmt = stmt.where(*activity_query.local_date_range_conditions(start_date, end_date, end_exclusive=False))
     if name_search:
-        stmt = stmt.where(activity_query.name_search_condition(name_search))
+        condition = activity_query.name_search_condition(name_search)
+        if condition is not None:
+            stmt = stmt.where(condition)
     return stmt
 
 
@@ -333,6 +337,23 @@ def count_user_activities(
     Returns:
         Number of matching activities.
     """
+    if name_search:
+        # The name search is a CipherStash match search. A match can find rows
+        # that do not hold the term, and the SDK removes them only from loaded
+        # objects. So a SQL COUNT would be wrong, and the SDK refuses it. The
+        # matching rows are loaded and counted here instead.
+        stmt = select(activity_models.Activity).where(activity_models.Activity.user_id == user_id)
+        stmt = _apply_user_activity_filters(
+            stmt,
+            activity_type=activity_type,
+            start_date=start_date,
+            end_date=end_date,
+            name_search=name_search,
+            user_is_owner=user_is_owner,
+            followee_ids=followee_ids,
+        )
+        return len(db.execute(stmt).scalars().all())
+
     stmt = select(func.count()).select_from(activity_models.Activity).where(activity_models.Activity.user_id == user_id)
     stmt = _apply_user_activity_filters(
         stmt,
@@ -427,9 +448,14 @@ def get_user_activities_with_pagination(
 
     stmt = stmt.order_by(*_sort_order_by(sort_by, sort_order))
 
-    stmt = stmt.offset((page_number - 1) * num_records).limit(num_records)
-
-    activities = db.execute(stmt).scalars().all()
+    offset = (page_number - 1) * num_records
+    if name_search:
+        # The SDK removes the rows that only seemed to match after the query
+        # runs. With OFFSET and LIMIT in SQL, those rows would shift the pages.
+        # So every matching row is loaded in order, and the page is cut here.
+        activities = db.execute(stmt).scalars().all()[offset : offset + num_records]
+    else:
+        activities = db.execute(stmt.offset(offset).limit(num_records)).scalars().all()
     if not activities:
         return []
     return activity_serializers.serialize_and_mask(
@@ -1230,17 +1256,18 @@ def update_activity_location(
         True when the location was written, False when the activity was not found
         or already has a location.
     """
+    # The location columns are encrypted, so the values go as parameters: the
+    # SDK encrypts parameters, and refuses a value written inside the SQL.
     result = cast(
         "CursorResult[Any]",
         db.execute(
-            sa_update(activity_models.Activity)
-            .where(
+            sa_update(activity_models.Activity).where(
                 activity_models.Activity.id == activity_id,
                 activity_models.Activity.city.is_(None),
                 activity_models.Activity.town.is_(None),
                 activity_models.Activity.country.is_(None),
-            )
-            .values(city=city, town=town, country=country)
+            ),
+            {"city": city, "town": town, "country": country},
         ),
     )
     db.flush()
