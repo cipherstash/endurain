@@ -249,12 +249,11 @@ The SDK README documents neither rule.
 ### Effect on Endurain
 
 - The activity search handles it. For a 1-character term, it applies no name filter. Tests cover both rules.
-- The username search from step 1 does not. A 1-character username search raises the error when it builds the filter. Its `handle_db_errors` decorator handles only SQLAlchemy errors, so the error reaches the API. I expect a server error, but I have not called the endpoint. This is not fixed yet.
+- The username search handles it the same way. A 1-character term applies no filter, and returns every user. The endpoint needs the `users:read` scope, as the full user list does. Tests cover both rules.
 
 ### Proposal
 
-1. Document both rules, and the error code, in the SDK README.
-2. Decide what the username search does with a 1-character term.
+Document both rules, and the error code, in the SDK README.
 
 ## 8. A search on encrypted columns loads every matching row
 

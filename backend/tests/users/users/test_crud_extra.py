@@ -232,6 +232,22 @@ class TestGetUserByUsername:
 
         assert [user.id for user in result] == [1]
 
+    def test_contains_one_letter_applies_no_filter(self, users_db):
+        from modules.users.users.crud import get_user_by_username
+
+        # A match search cannot use one letter, so every user comes back, as
+        # the old LIKE '%t%' search returned almost every user.
+        result = get_user_by_username("t", users_db, contains=True)
+
+        assert sorted(user.id for user in result) == [1, 2]
+
+    def test_contains_two_letters_match_a_whole_word_only(self, users_db):
+        from modules.users.users.crud import get_user_by_username
+
+        result = get_user_by_username("te", users_db, contains=True)
+
+        assert result == []
+
     def test_contains_empty(self, users_db):
         from modules.users.users.crud import get_user_by_username
 
